@@ -1,0 +1,10 @@
+{
+  "data": {
+    "authenticate": {
+      "didSucceed": false,
+      "error": "INCORRECT_CREDENTIALS",
+      "expiresIn": null,
+      "outcome": null
+    }
+  }
+}

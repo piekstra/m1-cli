@@ -1,0 +1,53 @@
+{
+  "data": {
+    "viewer": {
+      "documents": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "DUMMYCURSOR006"
+        },
+        "edges": [
+          {
+            "node": {
+              "__typename": "InvestAccountDocument",
+              "id": "doc-000000001",
+              "date": "2025-12-31",
+              "type": "TAX_FORM",
+              "name": "Tax Form 1099 Consolidated",
+              "accountName": {
+                "label": "Fun Money",
+                "subLabel": "Invest Individual"
+              }
+            }
+          },
+          {
+            "node": {
+              "__typename": "InvestAccountDocument",
+              "id": "doc-000000002",
+              "date": "2026-07-31",
+              "type": "STATEMENT",
+              "name": "July 2026 Brokerage Statement",
+              "accountName": {
+                "label": "Fun Money",
+                "subLabel": "Invest Individual"
+              }
+            }
+          },
+          {
+            "node": {
+              "__typename": "InvestAccountDocument",
+              "id": "doc-000000003",
+              "date": "2026-08-06",
+              "type": "TRADE_CONFIRMATION",
+              "name": "Trade Confirmation",
+              "accountName": {
+                "label": null,
+                "subLabel": "Invest Roth IRA"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

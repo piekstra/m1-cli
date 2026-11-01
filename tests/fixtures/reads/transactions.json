@@ -1,0 +1,48 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "fdxTransactions": {
+        "pageInfo": { "hasNextPage": true, "endCursor": "DUMMYCURSOR012" },
+        "edges": [
+          {
+            "node": {
+              "__typename": "FdxInvestmentTransaction",
+              "id": "act-000000020",
+              "amount": 203.8,
+              "category": null,
+              "subCategory": null,
+              "description": "0.53118 shares of VTI purchased.",
+              "debitCreditMemo": "DEBIT",
+              "status": "POSTED",
+              "transactionTimestamp": "2026-08-13T13:46:53.94176Z",
+              "postedTimestamp": "2026-08-13T13:46:53.94176Z",
+              "symbol": "VTI",
+              "units": 0.53118,
+              "unitPrice": 383.67,
+              "investmentType": "PURCHASED",
+              "commission": null,
+              "fees": 0
+            }
+          },
+          {
+            "node": {
+              "__typename": "FdxDepositTransaction",
+              "id": "act-000000021",
+              "amount": 500.0,
+              "category": null,
+              "subCategory": null,
+              "description": "Deposit from external bank",
+              "debitCreditMemo": "CREDIT",
+              "status": "POSTED",
+              "transactionTimestamp": "2026-08-01T00:00:00Z",
+              "postedTimestamp": "2026-08-01T00:00:00Z",
+              "payee": "External Bank",
+              "depositType": "DEPOSIT"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

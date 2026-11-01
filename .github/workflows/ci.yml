@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify
+    # Linux only, by design. Everything this gate runs — fmt, clippy, the
+    # offline test suite, and the version/help/info smoke — is platform
+    # agnostic: no test touches the OS keychain (see AGENTS.md, tests are
+    # offline and credential-free), and `keyring` builds against the
+    # secret-service backend here. macOS runners bill ~10x for coverage we
+    # would not gain. The macOS-native keychain path is exercised by local
+    # dogfooding and by the release build, not per-push.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: linux deps
+        # dbus dev headers for the secret-service keyring backend.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --all --locked
+      - name: "smoke (offline: version/help/info need no network or creds)"
+        run: |
+          cargo build --release --locked
+          ./target/release/m1f --version
+          ./target/release/m1f --help > /dev/null
+          ./target/release/m1f info > /dev/null
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    # Read-only suffices because gitleaks runs as a plain binary below rather
+    # than as gitleaks-action. The action calls the PR API and so needs
+    # `pull-requests: write`, without which it fails as "Resource not accessible
+    # by integration" — a permissions failure that reads like a scan failure.
+    # Invoking the binary sidesteps that class of problem entirely.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install audit tooling
+        run: cargo install cargo-audit cargo-deny --locked
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny
+        run: cargo deny check
+      - name: gitleaks
+        # Scans the FULL history rather than a commit range. gitleaks-action
+        # derives a range like `<before>^..<after>`, which is unresolvable on a
+        # repository's first push — the initial commit has no parent — and fails
+        # the job even when it finds nothing, which is exactly what happened here.
+        env:
+          GITLEAKS_VERSION: "8.24.3"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --no-banner --verbose --exit-code 1

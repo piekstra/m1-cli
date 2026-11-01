@@ -1,0 +1,10 @@
+{
+  "data": {
+    "authenticate": {
+      "didSucceed": false,
+      "error": "EMAIL_AMFA_REQUIRED",
+      "expiresIn": null,
+      "outcome": null
+    }
+  }
+}

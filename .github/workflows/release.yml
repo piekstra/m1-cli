@@ -1,0 +1,72 @@
+name: Release
+
+# Tag-triggered releases: push a `v*` tag and this builds the per-platform
+# binaries and publishes them. Assets are named `m1f-<target>.tar.gz` (plus a
+# `.sha256`), exactly what `m1f self-update` looks for on the latest release.
+#
+# The expensive macOS runners live here — on tags, not per-push CI — because
+# `*-apple-darwin` artifacts genuinely cannot be built on Linux. aarch64 Linux
+# is intentionally omitted: the secret-service keyring backend links libdbus,
+# awkward to cross-compile.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
+        run: |
+          tar -czf "m1f-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" m1f
+          shasum -a 256 "m1f-${{ matrix.target }}.tar.gz" > "m1f-${{ matrix.target }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m1f-${{ matrix.target }}
+          path: m1f-${{ matrix.target }}.tar.gz*
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creating the release is the one write this workflow needs
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

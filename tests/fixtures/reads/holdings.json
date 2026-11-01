@@ -1,0 +1,78 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "balance": {
+        "investments": {
+          "positions": {
+            "total": 2,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "DUMMYCURSOR002"
+            },
+            "edges": [
+              {
+                "cursor": "DUMMYCURSOR003",
+                "node": {
+                  "id": "hold-000000001",
+                  "quantity": 3.23235,
+                  "cost": {
+                    "cost": 1200.5,
+                    "averageSharePrice": 371.41
+                  },
+                  "value": {
+                    "value": 1250.75,
+                    "priceDate": "2026-08-13"
+                  },
+                  "unrealizedGain": {
+                    "gain": 50.25,
+                    "gainPercent": 4.19
+                  },
+                  "dividends": {
+                    "dividendYield": 1.07,
+                    "yieldOnCost": 1.09,
+                    "dividendFrequency": "QUARTERLY",
+                    "lastTwelveMonthsPaid": "$13.20"
+                  },
+                  "security": {
+                    "symbol": "VTI",
+                    "name": "Vanguard Total Stock Market ETF"
+                  }
+                }
+              },
+              {
+                "cursor": "DUMMYCURSOR004",
+                "node": {
+                  "id": "hold-000000002",
+                  "quantity": 10.5,
+                  "cost": {
+                    "cost": 900.0,
+                    "averageSharePrice": 85.71
+                  },
+                  "value": {
+                    "value": 934.5,
+                    "priceDate": "2026-08-13"
+                  },
+                  "unrealizedGain": {
+                    "gain": 34.5,
+                    "gainPercent": 3.83
+                  },
+                  "dividends": {
+                    "dividendYield": 0.4,
+                    "yieldOnCost": 0.41,
+                    "dividendFrequency": "QUARTERLY",
+                    "lastTwelveMonthsPaid": "$--"
+                  },
+                  "security": {
+                    "symbol": "VUG",
+                    "name": "Vanguard Growth ETF"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

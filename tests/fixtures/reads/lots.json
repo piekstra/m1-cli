@@ -1,0 +1,70 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "taxLots": {
+        "totalCount": 3,
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "DUMMYCURSOR007"
+        },
+        "edges": [
+          {
+            "cursor": "DUMMYCURSOR008",
+            "node": {
+              "id": "act-000000006",
+              "symbol": "VTI",
+              "cusip": "00000DUMMY",
+              "acquisitionDate": "2026-03-02",
+              "quantity": 1.60519,
+              "costBasis": 142.52,
+              "shortLongTermHolding": "Short",
+              "closeDate": null,
+              "shortTermRealizedGainLoss": null,
+              "longTermRealizedGainLoss": null,
+              "unrealizedGainLoss": 0.13,
+              "washSaleIndicator": false,
+              "disallowedWashSaleAmount": null
+            }
+          },
+          {
+            "cursor": "DUMMYCURSOR009",
+            "node": {
+              "id": "act-000000007",
+              "symbol": "VUG",
+              "cusip": "00000DUMMY",
+              "acquisitionDate": "2025-01-15",
+              "quantity": 2.0,
+              "costBasis": 300.0,
+              "shortLongTermHolding": "Long",
+              "closeDate": "2026-06-01",
+              "shortTermRealizedGainLoss": 0,
+              "longTermRealizedGainLoss": 45.5,
+              "unrealizedGainLoss": 0,
+              "washSaleIndicator": false,
+              "disallowedWashSaleAmount": 0
+            }
+          },
+          {
+            "cursor": "DUMMYCURSOR010",
+            "node": {
+              "id": "act-000000008",
+              "symbol": "VB",
+              "cusip": "00000DUMMY",
+              "acquisitionDate": "2026-05-10",
+              "quantity": 1.0,
+              "costBasis": 250.0,
+              "shortLongTermHolding": "Short",
+              "closeDate": "2026-06-20",
+              "shortTermRealizedGainLoss": -12.75,
+              "longTermRealizedGainLoss": 0,
+              "unrealizedGainLoss": 0,
+              "washSaleIndicator": true,
+              "disallowedWashSaleAmount": 12.75
+            }
+          }
+        ]
+      }
+    }
+  }
+}

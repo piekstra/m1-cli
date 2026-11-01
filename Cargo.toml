@@ -1,0 +1,40 @@
+[package]
+name = "m1-cli"
+version = "0.3.1"
+edition = "2021"
+rust-version = "1.88"
+description = "Read your M1 (m1.com) investment accounts, holdings, activity, and tax documents from the command line. Keychain-secured, agent-friendly. Unofficial — not affiliated with M1 Holdings."
+license = "MIT"
+repository = "https://github.com/piekstra/m1-cli"
+homepage = "https://github.com/piekstra/m1-cli"
+readme = "README.md"
+keywords = ["m1", "investing", "brokerage", "portfolio", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "m1f"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.9.0" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

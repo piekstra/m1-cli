@@ -1,0 +1,18 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000002",
+      "registration": "ROTH_IRA",
+      "iraContributionLimits": {
+        "currentYearLimit": 7500
+      },
+      "iraContributionTotals": {
+        "totalsByYear": [
+          { "year": 2026, "totalContribution": 2000.0, "maxContribution": 7500.0 },
+          { "year": 2025, "totalContribution": 7000.0, "maxContribution": 7000.0 },
+          { "year": 2024, "totalContribution": 3456.78, "maxContribution": 7000.0 }
+        ]
+      }
+    }
+  }
+}

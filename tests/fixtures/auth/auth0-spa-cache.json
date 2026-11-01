@@ -1,0 +1,18 @@
+{
+  "body": {
+    "access_token": "DUMMY.ACCESS.TOKEN",
+    "refresh_token": "DUMMY.REFRESH.TOKEN",
+    "id_token": "DUMMY.ID.TOKEN",
+    "scope": "openid profile email offline_access exchange:exchange:read",
+    "oauthTokenScope": "openid profile email offline_access exchange:exchange:read",
+    "expires_in": 86400,
+    "token_type": "Bearer",
+    "audience": "https://lens.m1finance.com",
+    "client_id": "1Gz7GHj4BiQ9lTQgVpleNuzUHl2KQnYI",
+    "decodedToken": {
+      "claims": { "__raw": "DUMMY.ID.TOKEN", "sub": "auth0|DUMMYSUBJECT" },
+      "user": { "sub": "auth0|DUMMYSUBJECT" }
+    }
+  },
+  "expiresAt": 1900000000
+}

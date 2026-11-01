@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "isAuthError": false,
+      "name": "GraphQLError",
+      "http": { "status": 400 },
+      "code": "GRAPHQL_VALIDATION_FAILED",
+      "message": "Cannot query field \"nope\" on type \"Viewer\".",
+      "locations": [{ "line": 1, "column": 23 }]
+    }
+  ]
+}

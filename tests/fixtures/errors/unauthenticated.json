@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "message": "Not authenticated",
+      "path": ["viewer"],
+      "extensions": {
+        "code": "UNAUTHENTICATED"
+      }
+    }
+  ],
+  "data": null
+}

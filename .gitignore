@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Local env / editor
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials must never be committed — tokens live only in the OS keychain
+*.pem
+*.key
+secrets.*
+
+# Raw provider captures are live credentials (pre-signed document URLs, bearer
+# tokens). Scrub into tests/fixtures/ by hand; never commit the raw capture.
+*.har
+captures/

@@ -1,0 +1,56 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "investActivity": {
+        "activity": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "DUMMYCURSOR201"
+          },
+          "edges": [
+            {
+              "node": {
+                "__typename": "InvestActivityCashEntry",
+                "id": "act-000000201",
+                "date": "2026-06-30T04:00:00.000Z",
+                "title": "Dividend",
+                "description": "",
+                "amount": 1.25,
+                "cashSecurity": {
+                  "symbol": "VTI"
+                }
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityCashEntry",
+                "id": "act-000000202",
+                "date": "2026-06-30T04:00:00.000Z",
+                "title": "Dividend",
+                "description": "",
+                "amount": 0.5,
+                "cashSecurity": {
+                  "symbol": "SCHD"
+                }
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityCashEntry",
+                "id": "act-000000203",
+                "date": "2026-03-26T04:00:00.000Z",
+                "title": "Dividend",
+                "description": "",
+                "amount": 2.0,
+                "cashSecurity": {
+                  "symbol": "VTI"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "investActivity": {
+        "activity": {
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "DUMMYCURSOR005"
+          },
+          "edges": [
+            {
+              "node": {
+                "__typename": "InvestActivityTradeSummaryEntry",
+                "id": "act-000000001",
+                "date": "2026-08-13",
+                "title": "Morning Trading",
+                "description": "Morning Trading",
+                "countOfBuys": 5,
+                "countOfSells": 0,
+                "amountOfBuys": 500.0,
+                "amountOfSells": 0
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityCashEntry",
+                "id": "act-000000002",
+                "date": "2026-08-13",
+                "title": "Deposit",
+                "description": "Deposit of $500.00 completed.",
+                "amount": 500.0
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityTradeEntry",
+                "id": "act-000000003",
+                "date": "2026-08-06",
+                "title": "Buy",
+                "description": "Bought 1.5 shares of VTI",
+                "isBuy": true,
+                "quantity": 1.5,
+                "sharePrice": 310.0,
+                "amount": 465.0,
+                "tradeSecurity": {
+                  "symbol": "VTI"
+                }
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityCashEntry",
+                "id": "act-000000004",
+                "date": "2026-07-30",
+                "title": "Withdrawal",
+                "description": "Withdrawal completed.",
+                "amount": -25.0
+              }
+            },
+            {
+              "node": {
+                "__typename": "InvestActivityPositionEntry",
+                "id": "act-000000005",
+                "date": "2026-07-23",
+                "title": "Position update",
+                "description": "Shares received",
+                "quantity": 0.5,
+                "positionSecurity": {
+                  "symbol": "VUG"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

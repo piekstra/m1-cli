@@ -1,0 +1,25 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "name": "Individual Brokerage",
+      "nickname": "Fun Money",
+      "registration": "INDIVIDUAL",
+      "balance": {
+        "totalValue": { "value": 11500.07, "hasValue": true },
+        "cash": { "available": 0.07 },
+        "investments": {
+          "totalCost": { "cost": 10000.0 },
+          "totalValue": { "value": 11500.0 },
+          "totalUnrealizedGain": { "gain": 1500.0, "gainPercent": 15.0, "isPartial": false }
+        }
+      },
+      "fundingTotals": {
+        "totalsByYear": [
+          { "year": 2026, "totalDeposits": 10000.0, "totalWithdrawals": 0.0 },
+          { "year": 2025, "totalDeposits": 5000.0, "totalWithdrawals": 1200.0 }
+        ]
+      }
+    }
+  }
+}

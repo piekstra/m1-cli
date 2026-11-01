@@ -1,0 +1,77 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "DUMMYCURSOR001"
+        },
+        "edges": [
+          {
+            "node": {
+              "id": "acct-000000001",
+              "name": "Individual Brokerage",
+              "nickname": "Fun Money",
+              "registration": "INDIVIDUAL",
+              "isRetirement": false,
+              "status": "OPENED",
+              "isActive": true,
+              "isFunded": true,
+              "balance": {
+                "totalValue": {
+                  "value": 12345.67,
+                  "hasValue": true
+                },
+                "cash": {
+                  "available": 210.05
+                }
+              }
+            }
+          },
+          {
+            "node": {
+              "id": "acct-000000002",
+              "name": "Roth IRA",
+              "nickname": null,
+              "registration": "ROTH_IRA",
+              "isRetirement": true,
+              "status": "OPENED",
+              "isActive": true,
+              "isFunded": true,
+              "balance": {
+                "totalValue": {
+                  "value": 6543.21,
+                  "hasValue": true
+                },
+                "cash": {
+                  "available": 0
+                }
+              }
+            }
+          },
+          {
+            "node": {
+              "id": "acct-000000003",
+              "name": "Joint Brokerage",
+              "nickname": null,
+              "registration": "JOINT",
+              "isRetirement": false,
+              "status": "OPENED",
+              "isActive": true,
+              "isFunded": false,
+              "balance": {
+                "totalValue": {
+                  "value": 0,
+                  "hasValue": false
+                },
+                "cash": {
+                  "available": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

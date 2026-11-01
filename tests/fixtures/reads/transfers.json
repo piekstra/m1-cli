@@ -1,0 +1,49 @@
+{
+  "data": {
+    "viewer": {
+      "transfers": {
+        "pastInstances": {
+          "pageInfo": { "hasNextPage": true, "endCursor": "DUMMYCURSOR011" },
+          "edges": [
+            {
+              "node": {
+                "id": "act-000000010",
+                "title": "External Bank to Individual Brokerage",
+                "description": null,
+                "amount": 500.0,
+                "startDate": "2026-08-13T11:01:23.802Z",
+                "endDate": "2026-08-13T13:29:37.762Z",
+                "isLiquidation": false,
+                "status": {
+                  "code": "COMPLETED",
+                  "isPending": false,
+                  "isComplete": true,
+                  "isCanceled": false,
+                  "isFailed": false
+                }
+              }
+            },
+            {
+              "node": {
+                "id": "act-000000011",
+                "title": "Withdrawal to External Bank",
+                "description": "Requested withdrawal",
+                "amount": -250.0,
+                "startDate": "2026-07-30T09:00:00.000Z",
+                "endDate": null,
+                "isLiquidation": false,
+                "status": {
+                  "code": "PENDING",
+                  "isPending": true,
+                  "isComplete": false,
+                  "isCanceled": false,
+                  "isFailed": false
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

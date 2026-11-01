@@ -1,0 +1,13 @@
+{
+  "data": {
+    "authenticate": {
+      "didSucceed": true,
+      "error": null,
+      "expiresIn": 86400,
+      "outcome": {
+        "accessToken": "DUMMY.ACCESS.TOKEN",
+        "refreshToken": "DUMMY.REFRESH.TOKEN"
+      }
+    }
+  }
+}
