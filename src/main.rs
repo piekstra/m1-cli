@@ -13,6 +13,7 @@ mod client;
 mod commands;
 mod config;
 mod graphql;
+mod mcp;
 mod parse;
 
 use std::path::PathBuf;
@@ -102,6 +103,12 @@ enum Command {
     Completions { shell: Shell },
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
+    /// Serve read-only M1 tools to Claude over MCP (stdio).
+    ///
+    /// For Claude Code (`claude mcp add m1 -- m1f mcp`), Claude Desktop and
+    /// any MCP client. The tools use the session `m1f auth login --browser`
+    /// stored, and never sign in themselves.
+    Mcp(pk_cli_mcp::McpArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -258,8 +265,25 @@ fn main() {
 
 fn run(cli: &Cli) -> Result<(), CliError> {
     let store = ConfigStore::new(BIN).with_override(cli.config.clone());
-    let creds = CredentialStore::for_binary(BIN);
+    // `M1F_KEYCHAIN_SERVICE` exists for the test suite and for dogfooding
+    // the error paths: pointing it at a service that holds nothing reads a
+    // *missing* keychain item, which needs no user approval and fails as
+    // "not logged in", where the real service would open the user's actual
+    // session (and, from the ad-hoc-signed binary `cargo test` builds, raise
+    // a macOS keychain prompt). It renames which entry is read; it never
+    // carries a session.
+    let creds = match std::env::var("M1F_KEYCHAIN_SERVICE") {
+        Ok(service) if !service.is_empty() => CredentialStore::new(service),
+        _ => CredentialStore::for_binary(BIN),
+    };
     let cfg: config::Config = store.load()?;
+
+    if let Command::Mcp(args) = &cli.command {
+        return pk_cli_mcp::run(
+            args,
+            mcp::M1Tools::new(mcp::LiveSource::new(&cli.common, cfg, creds)),
+        );
+    }
 
     let ctx = commands::Ctx {
         common: &cli.common,
@@ -302,6 +326,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             current: env!("CARGO_PKG_VERSION").into(),
         }
         .run(args, cli.common.json, cli.common.quiet),
+        Command::Mcp(_) => unreachable!("served before the context is built"),
         Command::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), BIN, &mut std::io::stdout());
             Ok(())
@@ -331,6 +356,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
                     "summary",
                     "status",
                     "api",
+                    "mcp",
                 ],
             )
             .with_profiles(&[pk_cli_documents::PROFILE]);

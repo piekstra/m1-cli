@@ -17,7 +17,39 @@ const PAGE_SIZE: u32 = 100;
 pub fn list(ctx: &Ctx, range: &RangeArgs) -> Result<(), CliError> {
     range.validate()?;
     let account = ctx.account()?;
+    let (rows, truncated) = fetch(ctx, &account, range)?;
 
+    if truncated && !ctx.common.quiet {
+        eprintln!(
+            "stopped after {MAX_PAGES} pages — narrow the window with --since/--until \
+             or raise --limit"
+        );
+    }
+
+    let rows = paginate(rows, "date", range);
+    if rows.is_empty() {
+        note_empty(ctx, "activity");
+    }
+    // `truncated` rides in the DTO (not just stderr) so a --json consumer can
+    // tell a complete history from a page-capped prefix.
+    emit(
+        ctx,
+        "activity-list",
+        json!({ "items": rows, "truncated": truncated }),
+        |v| {
+            output::table(&table_view(
+                &items(v, "items"),
+                &["date", "type", "symbol", "description", "amount"],
+            ));
+        },
+    );
+    Ok(())
+}
+
+/// One account's activity rows, newest first: every page back past
+/// `--since` (or until `--limit` rows are in hand with no `--since`), and
+/// whether the page ceiling stopped the walk first.
+pub fn fetch(ctx: &Ctx, account: &str, range: &RangeArgs) -> Result<(Vec<Value>, bool), CliError> {
     let page_size = range.limit.map(|n| n.min(PAGE_SIZE)).unwrap_or(PAGE_SIZE);
     let mut cursor: Option<String> = None;
     let mut rows: Vec<Value> = Vec::new();
@@ -57,35 +89,10 @@ pub fn list(ctx: &Ctx, range: &RangeArgs) -> Result<(), CliError> {
             break;
         }
     }
-
-    if truncated && !ctx.common.quiet {
-        eprintln!(
-            "stopped after {MAX_PAGES} pages — narrow the window with --since/--until \
-             or raise --limit"
-        );
-    }
-
-    let rows = paginate(rows, "date", range);
-    if rows.is_empty() {
-        note_empty(ctx, "activity");
-    }
-    // `truncated` rides in the DTO (not just stderr) so a --json consumer can
-    // tell a complete history from a page-capped prefix.
-    emit(
-        ctx,
-        "activity-list",
-        json!({ "items": rows, "truncated": truncated }),
-        |v| {
-            output::table(&table_view(
-                &items(v, "items"),
-                &["date", "type", "symbol", "description", "amount"],
-            ));
-        },
-    );
-    Ok(())
+    Ok((rows, truncated))
 }
 
-fn activity_dto(v: &Value) -> Result<Value, CliError> {
+pub(crate) fn activity_dto(v: &Value) -> Result<Value, CliError> {
     let mut dto = json!({ "id": parse::id(v, "id")? });
     if let Some(date) = parse::date_at(v, &["date", "createdAt", "settledAt", "timestamp"]) {
         dto["date"] = json!(date);

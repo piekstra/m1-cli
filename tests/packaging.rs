@@ -1,0 +1,71 @@
+//! The Claude Desktop extension manifest (`packaging/mcpb/manifest.json`)
+//! against the binary it packages, so a release cannot ship a manifest that
+//! names a tool or a version the binary does not have, or one that asks for
+//! a credential. The release workflow validates the schema with the `mcpb`
+//! CLI.
+
+use std::process::Command;
+
+use serde_json::{json, Value};
+
+fn manifest() -> Value {
+    let path = format!(
+        "{}/packaging/mcpb/manifest.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn the_manifest_version_is_the_crate_version() {
+    assert_eq!(manifest()["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn the_manifest_lists_exactly_the_served_tools() {
+    let listed: Vec<String> = manifest()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    let out = Command::new(env!("CARGO_BIN_EXE_m1f"))
+        .args(["mcp", "--list-tools"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let served: Vec<String> = serde_json::from_slice::<Value>(&out.stdout).unwrap()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(listed, served);
+}
+
+/// A browser session cannot be typed into a settings form, so the extension
+/// asks for nothing and passes nothing: the binary reads the session
+/// `m1f auth login --browser` stored in the OS keychain.
+#[test]
+fn every_platform_runs_mcp_with_no_credential_in_its_config() {
+    let m = manifest();
+    assert!(m.get("user_config").is_none(), "no settings to fill in");
+    let config = &m["server"]["mcp_config"];
+    let mut configs = vec![config.clone()];
+    for os in ["win32", "linux"] {
+        configs.push(config["platform_overrides"][os].clone());
+    }
+    for c in &configs {
+        assert_eq!(c["args"], json!(["mcp"]), "{c}");
+        assert!(
+            c["command"]
+                .as_str()
+                .unwrap()
+                .starts_with("${__dirname}/server/"),
+            "{c}"
+        );
+        assert!(c.get("env").is_none(), "{c}");
+    }
+    let text = m["long_description"].as_str().unwrap();
+    assert!(text.contains("m1f auth login --browser"), "{text}");
+}

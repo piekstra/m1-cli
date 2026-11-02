@@ -56,7 +56,7 @@ pub struct ListArgs {
 }
 
 /// Map the friendly flag spelling onto the enum member.
-fn type_filter(flag: Option<&str>) -> Result<Vec<&'static str>, CliError> {
+pub(crate) fn type_filter(flag: Option<&str>) -> Result<Vec<&'static str>, CliError> {
     let Some(flag) = flag else {
         return Ok(DOC_TYPES.to_vec());
     };
@@ -234,6 +234,24 @@ pub struct Fetched {
     embedded_url: Option<String>,
 }
 
+impl Fetched {
+    /// The document as the MCP tools may show it. When the id blob does not
+    /// decode, [`document_of`] falls back to the raw blob for `id` (and for
+    /// the name, when M1 sent none); a raw id that is long or relay-shaped
+    /// can then carry the account number and a signed URL, so it is blanked
+    /// rather than shown.
+    pub(crate) fn listed(self) -> Document {
+        let mut doc = self.doc;
+        let is_blob = doc.id == self.raw_id
+            && (self.raw_id.len() > 64 || parse::decode_relay_blob(&self.raw_id).is_some());
+        if is_blob {
+            doc.name = doc.name.replace(&self.raw_id, "Untitled document");
+            doc.id = String::new();
+        }
+        doc
+    }
+}
+
 /// The URL to fetch a document from.
 ///
 /// Verified live (2026-08-13): **`InvestAccountDocument` links come from the
@@ -307,7 +325,11 @@ fn fetch_document(ctx: &Ctx, url: &str) -> Result<Vec<u8>, CliError> {
 /// All three of `documentType`, `startDate`, `endDate` are sent on every
 /// request because the resolver requires them (live finding — introspection
 /// says nullable, the resolver says otherwise).
-fn fetch(ctx: &Ctx, range: &RangeArgs, types: &[&str]) -> Result<Vec<Fetched>, CliError> {
+pub(crate) fn fetch(
+    ctx: &Ctx,
+    range: &RangeArgs,
+    types: &[&str],
+) -> Result<Vec<Fetched>, CliError> {
     let page_size = range.limit.map(|n| n.min(PAGE_SIZE)).unwrap_or(PAGE_SIZE);
     let start = range.since.clone().unwrap_or_else(|| EARLIEST.to_string());
     let end = range
@@ -372,7 +394,7 @@ fn in_window(date: Option<&str>, range: &RangeArgs) -> bool {
     after && before
 }
 
-fn document_of(v: &Value) -> Result<Fetched, CliError> {
+pub(crate) fn document_of(v: &Value) -> Result<Fetched, CliError> {
     let raw_id = parse::id(v, "id")?;
     let inner = decode_id_blob(&raw_id);
 

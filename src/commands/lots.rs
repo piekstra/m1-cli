@@ -48,12 +48,69 @@ pub fn list(ctx: &Ctx, args: &LotsArgs) -> Result<(), CliError> {
         _ => &["OPEN", "CLOSED"],
     };
 
+    let (rows, truncated) = fetch(ctx, &account, lot_types, &args.range)?;
+    if truncated && !ctx.common.quiet {
+        // `AccountTaxLots` has no server-side date filter (args are `first`,
+        // `after`, `lotType`), so --since/--until can't reduce what is fetched;
+        // name the levers that actually do.
+        eprintln!(
+            "stopped after {MAX_PAGES} pages per lot type — this lot list is INCOMPLETE. \
+             Narrow with --open/--closed, or raise the page cap."
+        );
+    }
+
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .filter(|r| in_lots_window(r, &args.range))
+        .take(args.range.limit.map_or(usize::MAX, |n| n as usize))
+        .collect();
+    if rows.is_empty() {
+        note_empty(ctx, "tax lots");
+    }
+    // `truncated` rides in the DTO so a --json consumer building Form 8949 can
+    // tell a complete lot set from a silently-capped prefix — a distinction
+    // stderr can't carry (and --quiet hides). Never omit it: a machine reader
+    // must be able to trust `false` means complete.
+    emit(
+        ctx,
+        "lot-list",
+        json!({ "items": rows, "truncated": truncated }),
+        |v| {
+            output::table(&table_view(
+                &items(v, "items"),
+                &[
+                    "symbol",
+                    "status",
+                    "quantity",
+                    "acquired",
+                    "cost_basis",
+                    "term",
+                    "closed",
+                    "realized_gain",
+                    "wash_sale",
+                ],
+            ));
+        },
+    );
+    Ok(())
+}
+
+/// One account's lots of `lot_types` (`OPEN`, `CLOSED`), each stamped with
+/// its `status`, in M1's order, and whether the page ceiling stopped a walk
+/// first. With no `--since`/`--until`, the walk stops once `--limit` rows are
+/// in hand.
+pub fn fetch(
+    ctx: &Ctx,
+    account: &str,
+    lot_types: &[&str],
+    range: &RangeArgs,
+) -> Result<(Vec<Value>, bool), CliError> {
     // A date window forces fetching every page before filtering (the filter is
     // client-side), so early-stopping on --limit is only safe with no window;
     // there, shrink `first` and stop once enough rows are in hand, sparing this
     // rate-limited API up to 40 needless round trips for `lots list --limit 5`.
-    let has_window = args.range.since.is_some() || args.range.until.is_some();
-    let limit = args.range.limit.map(|n| n as usize);
+    let has_window = range.since.is_some() || range.until.is_some();
+    let limit = range.limit.map(|n| n as usize);
     let page_size = match (has_window, limit) {
         (false, Some(n)) => (n as u32).clamp(1, PAGE_SIZE),
         _ => PAGE_SIZE,
@@ -103,53 +160,10 @@ pub fn list(ctx: &Ctx, args: &LotsArgs) -> Result<(), CliError> {
             }
         }
     }
-    if truncated && !ctx.common.quiet {
-        // `AccountTaxLots` has no server-side date filter (args are `first`,
-        // `after`, `lotType`), so --since/--until can't reduce what is fetched;
-        // name the levers that actually do.
-        eprintln!(
-            "stopped after {MAX_PAGES} pages per lot type — this lot list is INCOMPLETE. \
-             Narrow with --open/--closed, or raise the page cap."
-        );
-    }
-
-    let rows: Vec<Value> = rows
-        .into_iter()
-        .filter(|r| in_lots_window(r, &args.range))
-        .take(limit.unwrap_or(usize::MAX))
-        .collect();
-    if rows.is_empty() {
-        note_empty(ctx, "tax lots");
-    }
-    // `truncated` rides in the DTO so a --json consumer building Form 8949 can
-    // tell a complete lot set from a silently-capped prefix — a distinction
-    // stderr can't carry (and --quiet hides). Never omit it: a machine reader
-    // must be able to trust `false` means complete.
-    emit(
-        ctx,
-        "lot-list",
-        json!({ "items": rows, "truncated": truncated }),
-        |v| {
-            output::table(&table_view(
-                &items(v, "items"),
-                &[
-                    "symbol",
-                    "status",
-                    "quantity",
-                    "acquired",
-                    "cost_basis",
-                    "term",
-                    "closed",
-                    "realized_gain",
-                    "wash_sale",
-                ],
-            ));
-        },
-    );
-    Ok(())
+    Ok((rows, truncated))
 }
 
-fn lot_dto(v: &Value) -> Result<Value, CliError> {
+pub(crate) fn lot_dto(v: &Value) -> Result<Value, CliError> {
     let mut dto = json!({});
     if let Some(sym) = parse::opt_string(v, "symbol") {
         dto["symbol"] = json!(sym);
@@ -205,7 +219,7 @@ fn lot_dto(v: &Value) -> Result<Value, CliError> {
 /// 8949 lines are dated by sale), the **acquisition** date for a still-open
 /// lot. A lot with neither date is kept (filtered only by `--limit`), matching
 /// how undated rows are treated elsewhere.
-fn in_lots_window(row: &Value, range: &RangeArgs) -> bool {
+pub(crate) fn in_lots_window(row: &Value, range: &RangeArgs) -> bool {
     let key_date = row
         .get("closed")
         .and_then(Value::as_str)

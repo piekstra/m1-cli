@@ -1,72 +1,220 @@
-name: Release
+name: release
 
-# Tag-triggered releases: push a `v*` tag and this builds the per-platform
-# binaries and publishes them. Assets are named `m1f-<target>.tar.gz` (plus a
-# `.sha256`), exactly what `m1f self-update` looks for on the latest release.
+# Cut a release by pushing a tag like `v0.4.0`. Cross-platform artifacts live
+# here rather than in per-push CI, so the expensive macOS runner (about 10x
+# Linux) and the Windows runner (about 2x) are billed once per release
+# instead of once per commit. One job per OS: Linux, Windows, and ONE macOS
+# job (Apple Silicon, which cross-compiles the Intel target; the macOS SDK is
+# universal). Build jobs are independent (fail-fast: false) and each attaches
+# its own tarballs, so a slow or dead macOS queue never blocks the Linux
+# assets. The `.mcpb` (Claude Desktop extension) needs all three, so it is
+# packed last, on Linux.
 #
-# The expensive macOS runners live here — on tags, not per-push CI — because
-# `*-apple-darwin` artifacts genuinely cannot be built on Linux. aarch64 Linux
-# is intentionally omitted: the secret-service keyring backend links libdbus,
-# awkward to cross-compile.
-
+# Only `publish`, which runs on a tag alone and runs no third-party build
+# code, can write to the repository; building and packing (cargo, npx)
+# happen with a read-only token that checkout does not persist.
+#
+# The versions are checked before anything is built: the tag, Cargo.toml
+# and the .mcpb manifest must agree, or nothing is built or published.
+# `publish` attaches whatever was built even when one OS failed, then fails
+# the run if any expected asset is missing, so a partial release is never
+# a green one.
+#
+# A pull request that changes how releases are built, or the dependencies
+# and version (Cargo.toml, Cargo.lock), runs every job but `publish` as a
+# dry run: everything is built and packed, nothing is attached to a
+# release. The Windows and macOS builds run nowhere else, so a dependency
+# that breaks them shows on its pull request, not on the tag. The version
+# agreement also runs on every pull request, in tests/packaging.rs.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "packaging/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  # The manifest's version must be the crate's, and on a tag the tag's, or
+  # self-update and Claude Desktop would see one version and run another.
+  versions:
+    name: check versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tag, Cargo.toml and manifest agree
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          manifest_version=$(jq -r .version packaging/mcpb/manifest.json)
+          if [ "$manifest_version" != "$version" ]; then
+            echo "::error::packaging/mcpb/manifest.json is $manifest_version but Cargo.toml is $version"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
   build:
-    name: build ${{ matrix.target }}
+    name: build ${{ matrix.name }}
+    needs: versions
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+          - os: macos-15
+            name: apple (aarch64 + x86_64)
+            targets: "aarch64-apple-darwin x86_64-apple-darwin"
+          - os: ubuntu-latest
+            name: linux x86_64
+            targets: "x86_64-unknown-linux-gnu"
+          - os: windows-latest
+            name: windows x86_64
+            targets: "x86_64-pc-windows-msvc"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: linux deps
+      - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: build
-        run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: package
+      # Asset names are the contract `m1f self-update` resolves against:
+      # <bin>-<target>.tar.gz plus a sibling .sha256. The bare binaries also
+      # go to bin/<target>/ for the .mcpb job.
+      - name: Build and package each target
         run: |
-          tar -czf "m1f-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" m1f
-          shasum -a 256 "m1f-${{ matrix.target }}.tar.gz" > "m1f-${{ matrix.target }}.tar.gz.sha256"
+          set -euo pipefail
+          sha256() { if command -v shasum >/dev/null; then shasum -a 256 "$1"; else sha256sum "$1"; fi; }
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo build --release --locked --target "$t"
+            exe=m1f
+            case "$t" in *windows*) exe=m1f.exe ;; esac
+            tar -C "target/$t/release" -czf "m1f-$t.tar.gz" "$exe"
+            sha256 "m1f-$t.tar.gz" > "m1f-$t.tar.gz.sha256"
+            mkdir -p "bin/$t"
+            cp "target/$t/release/$exe" "bin/$t/"
+          done
+      # Claude Desktop picks a binary by OS, not by CPU, so the .mcpb carries
+      # one universal macOS binary.
+      - name: Universal macOS binary
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p bin/universal-apple-darwin
+          lipo -create -output bin/universal-apple-darwin/m1f \
+            bin/aarch64-apple-darwin/m1f bin/x86_64-apple-darwin/m1f
+          lipo -info bin/universal-apple-darwin/m1f
       - uses: actions/upload-artifact@v4
         with:
-          name: m1f-${{ matrix.target }}
-          path: m1f-${{ matrix.target }}.tar.gz*
+          name: bin-${{ runner.os }}
+          path: bin/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: |
+            m1f-*.tar.gz
+            m1f-*.tar.gz.sha256
+          retention-days: 3
+          if-no-files-found: error
 
-  release:
-    name: publish release
+  mcpb:
+    name: pack the Claude Desktop extension
     needs: build
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: bin
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The `versions` job has already held the manifest to Cargo.toml and
+      # the tag.
+      - name: Assemble, validate and pack
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          stage="$RUNNER_TEMP/m1f"
+          mkdir -p "$stage/server/linux"
+          cp packaging/mcpb/manifest.json LICENSE "$stage/"
+          cp bin/universal-apple-darwin/m1f "$stage/server/m1f"
+          cp bin/x86_64-pc-windows-msvc/m1f.exe "$stage/server/m1f.exe"
+          cp bin/x86_64-unknown-linux-gnu/m1f "$stage/server/linux/m1f"
+          # Artifacts drop the executable bit; the .mcpb keeps what it is given.
+          chmod +x "$stage/server/m1f" "$stage/server/linux/m1f"
+          npx -y @anthropic-ai/mcpb@2.1.2 validate "$stage/manifest.json"
+          npx -y @anthropic-ai/mcpb@2.1.2 pack "$stage" "m1f-$version.mcpb"
+          sha256sum "m1f-$version.mcpb" > "m1f-$version.mcpb.sha256"
+          unzip -Z "m1f-$version.mcpb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-mcpb
+          path: m1f-*.mcpb*
+          retention-days: 7
+          if-no-files-found: error
+
+  # Attaches whatever was built, even when one OS failed, so a dead macOS
+  # queue still leaves the Linux and Windows tarballs on the release; then
+  # fails if anything expected is missing. Never runs when the versions
+  # disagree.
+  publish:
+    name: attach to the release
+    needs: [versions, build, mcpb]
+    if: ${{ !cancelled() && needs.versions.result == 'success' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
     permissions:
-      contents: write # creating the release is the one write this workflow needs
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: dist-*
           path: dist
           merge-multiple: true
-      - name: publish
-        uses: softprops/action-gh-release@v2
+      - run: ls -l dist
+      - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/m1f-*.tar.gz
+            dist/m1f-*.tar.gz.sha256
+            dist/m1f-*.mcpb
+            dist/m1f-*.mcpb.sha256
           generate_release_notes: true
-          fail_on_unmatched_files: true
+      - name: Every expected asset was attached
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          missing=0
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            for f in "m1f-$t.tar.gz" "m1f-$t.tar.gz.sha256"; do
+              [ -f "dist/$f" ] || { echo "::error::missing $f"; missing=1; }
+            done
+          done
+          for f in "m1f-$version.mcpb" "m1f-$version.mcpb.sha256"; do
+            [ -f "dist/$f" ] || { echo "::error::missing $f"; missing=1; }
+          done
+          exit "$missing"
