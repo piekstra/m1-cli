@@ -20,9 +20,12 @@ name: release
 # the run if any expected asset is missing, so a partial release is never
 # a green one.
 #
-# A pull request that changes how releases are built runs every job but
-# `publish` as a dry run: everything is built and packed, nothing is
-# attached to a release.
+# A pull request that changes how releases are built, or the dependencies
+# and version (Cargo.toml, Cargo.lock), runs every job but `publish` as a
+# dry run: everything is built and packed, nothing is attached to a
+# release. The Windows and macOS builds run nowhere else, so a dependency
+# that breaks them shows on its pull request, not on the tag. The version
+# agreement also runs on every pull request, in tests/packaging.rs.
 on:
   push:
     tags: ["v*"]
@@ -31,6 +34,8 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "packaging/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

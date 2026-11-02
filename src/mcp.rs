@@ -149,10 +149,15 @@ impl Source for LiveSource {
             until: until.map(String::from),
             limit: None,
         };
-        // Only the document leaves: the raw id and the signed URL beside it
-        // are credentials (documents.rs).
+        // Only the document leaves, and never a raw id: the raw id and the
+        // signed URL beside it are credentials (documents.rs).
         self.with_ctx(|ctx| documents::fetch(ctx, &range, types))
-            .map(|fetched| fetched.into_iter().map(|f| f.doc).collect())
+            .map(|fetched| {
+                fetched
+                    .into_iter()
+                    .map(documents::Fetched::listed)
+                    .collect()
+            })
     }
 
     async fn closed_lots(&self, account_id: &str) -> Result<(Vec<Value>, bool), CliError> {
@@ -402,6 +407,13 @@ pub struct GainTotals {
     pub total: String,
     pub disallowed_wash_sale: String,
     pub lots: usize,
+    /// Closed lots with no sale date: in no figure, as no year holds them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub undated: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Default, Serialize, JsonSchema)]
@@ -639,7 +651,7 @@ impl<S: Source> M1Tools<S> {
                 date: d.date,
                 name: d.name,
                 kind: d.category.map(|c| c.to_ascii_lowercase().replace('_', "-")),
-                id: detailed.then_some(d.id),
+                id: Some(d.id).filter(|id| detailed && !id.is_empty()),
             })
             .collect();
         ToolOutput::new(&DocumentsOut {
@@ -685,14 +697,23 @@ impl<S: Source> M1Tools<S> {
             let (rows, capped) = self.source.closed_lots(&acct.id).await.map_err(tool_err)?;
             complete &= !capped;
             for row in rows {
-                if !lots::in_lots_window(&row, &range) || !matches_text(&row, "symbol", symbol) {
+                if !matches_text(&row, "symbol", symbol) {
+                    continue;
+                }
+                // A gain belongs to the year of its sale. `lots list` keeps a
+                // lot with no sale date (or windows it by its acquisition);
+                // a total cannot, so such a lot is counted apart.
+                let Some(sold) = text(&row, "closed") else {
+                    sums.undated += 1;
+                    continue;
+                };
+                if !lots::in_lots_window(&row, &range) {
                     continue;
                 }
                 sums.add(&row)?;
-                let sold = text(&row, "closed");
                 let item = LotItem {
                     symbol: text(&row, "symbol"),
-                    sold: sold.clone(),
+                    sold: Some(sold.clone()),
                     acquired: text(&row, "acquired"),
                     quantity: text(&row, "quantity"),
                     cost_basis: amount(&row, "cost_basis"),
@@ -704,7 +725,7 @@ impl<S: Source> M1Tools<S> {
                     cusip: text(&row, "cusip").filter(|_| detailed),
                     id: text(&row, "id").filter(|_| detailed),
                 };
-                matched.push((sold.unwrap_or_default(), item));
+                matched.push((sold, item));
             }
         }
         // Newest sale first, as the other lists.
@@ -730,6 +751,7 @@ struct Sums {
     total: i64,
     wash: i64,
     lots: usize,
+    undated: usize,
 }
 
 impl Sums {
@@ -758,6 +780,7 @@ impl Sums {
             total: s(self.total),
             disallowed_wash_sale: s(self.wash),
             lots: self.lots,
+            undated: self.undated,
         }
     }
 }

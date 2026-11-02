@@ -60,7 +60,7 @@ impl Fixtures {
             documents: parse::nodes(&documents, &["viewer", "documents"])
                 .unwrap()
                 .iter()
-                .map(|n| documents::document_of(n).unwrap().doc)
+                .map(|n| documents::document_of(n).unwrap().listed())
                 .collect(),
             // The live read asks for CLOSED lots only.
             lots: parse::nodes(&lots, &["node", "taxLots"])
@@ -493,6 +493,35 @@ fn an_unknown_document_type_names_the_known_ones() {
     assert!(t.source().calls().is_empty());
 }
 
+/// If M1 ever changes its id blob so it no longer decodes, the id (and a
+/// name that fell back to it) would be the blob, which can embed the account
+/// number and a signed link. Neither reaches a result.
+#[test]
+fn an_undecodable_id_blob_never_reaches_a_result() {
+    let blob = "SW52ZXN0QWNjb3VudERvY3VtZW50OnsiZG9jdW1lbnQiOm51bGwsInVybCI6Imh0dHBzOi8v".repeat(2);
+    let node = json!({"id": blob, "date": "2026-02-01", "type": "TAX_FORM"});
+    let mut fixtures = Fixtures::new();
+    fixtures
+        .documents
+        .push(documents::document_of(&node).unwrap().listed());
+    let t = M1Tools::new(fixtures);
+    let r = call(
+        &t,
+        DOCUMENTS_TOOL,
+        json!({"type": "tax-form", "response_format": "detailed"}),
+    );
+    let out = assert_fits(&t, DOCUMENTS_TOOL, &r);
+    assert!(!r.text().contains(&blob), "{}", r.text());
+    let undecoded = out["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["date"] == "2026-02-01")
+        .unwrap();
+    assert!(undecoded.get("id").is_none(), "{undecoded}");
+    assert_eq!(undecoded["name"], "Untitled document");
+}
+
 // ---- m1_realized_gains ------------------------------------------------------
 
 #[test]
@@ -575,6 +604,49 @@ fn the_totals_do_not_shrink_with_the_page() {
     assert_eq!(out["totals"]["lots"], 2);
     assert_eq!(out["totals"]["total"], "32.75");
     assert!(out["next_cursor"].is_string());
+}
+
+/// A gain belongs to the year of its sale, so a closed lot M1 sent without
+/// one is in no total, whatever the window, and is counted apart.
+#[test]
+fn a_closed_lot_without_a_sale_date_is_in_no_total() {
+    let mut fixtures = Fixtures::new();
+    fixtures.lots.push(json!({
+        "symbol": "VT", "id": "lot-000000010", "acquired": "2026-02-02", "term": "Short",
+        "realized_gain_short": {"amount": "99.00", "currency": "USD"},
+        "realized_gain": {"amount": "99.00", "currency": "USD"}
+    }));
+    let t = M1Tools::new(fixtures);
+    let r = call(
+        &t,
+        GAINS_TOOL,
+        json!({"since": "2026-01-01", "until": "2026-12-31"}),
+    );
+    let out = assert_fits(&t, GAINS_TOOL, &r);
+    assert_eq!(out["totals"]["total"], "32.75");
+    assert_eq!(out["totals"]["lots"], 2);
+    assert_eq!(out["totals"]["undated"], 1);
+    assert!(!field(&out["items"], "symbol").contains(&"VT".to_string()));
+}
+
+/// An amount that is not a decimal fails the call: a total that dropped or
+/// zeroed a lot would be a wrong tax figure.
+#[test]
+fn a_lot_amount_that_is_not_a_decimal_fails_the_totals() {
+    let mut fixtures = Fixtures::new();
+    fixtures.lots.push(json!({
+        "symbol": "VT", "id": "lot-000000011", "closed": "2026-03-03", "term": "Short",
+        "realized_gain": {"amount": "12,50", "currency": "USD"}
+    }));
+    let t = M1Tools::new(fixtures);
+    let text = err(&call(
+        &t,
+        GAINS_TOOL,
+        json!({"since": "2026-01-01", "until": "2026-12-31"}),
+    ))
+    .to_string();
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("12,50"), "{text}");
 }
 
 // ---- errors -----------------------------------------------------------------

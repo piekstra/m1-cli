@@ -234,6 +234,24 @@ pub struct Fetched {
     embedded_url: Option<String>,
 }
 
+impl Fetched {
+    /// The document as the MCP tools may show it. When the id blob does not
+    /// decode, [`document_of`] falls back to the raw blob for `id` (and for
+    /// the name, when M1 sent none); a raw id that is long or relay-shaped
+    /// can then carry the account number and a signed URL, so it is blanked
+    /// rather than shown.
+    pub(crate) fn listed(self) -> Document {
+        let mut doc = self.doc;
+        let is_blob = doc.id == self.raw_id
+            && (self.raw_id.len() > 64 || parse::decode_relay_blob(&self.raw_id).is_some());
+        if is_blob {
+            doc.name = doc.name.replace(&self.raw_id, "Untitled document");
+            doc.id = String::new();
+        }
+        doc
+    }
+}
+
 /// The URL to fetch a document from.
 ///
 /// Verified live (2026-08-13): **`InvestAccountDocument` links come from the
