@@ -21,10 +21,13 @@ const TOOLS: [&str; 4] = [
     "m1_realized_gains",
 ];
 
+/// A keychain service that holds nothing, so no test reads a real session.
+const EMPTY_SERVICE: &str = "piekstra.m1f-test-empty";
+
 fn m1f() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_m1f"));
     c.env_remove("M1F_MCP_TOKEN")
-        .env("M1F_KEYCHAIN_SERVICE", "piekstra.m1f-test-empty")
+        .env("M1F_KEYCHAIN_SERVICE", EMPTY_SERVICE)
         .arg("--config")
         .arg(std::env::temp_dir().join(format!(
             "m1f-mcp-http-test-{}/config.json",
