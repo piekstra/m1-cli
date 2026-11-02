@@ -238,6 +238,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1013,6 +1019,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1034,6 +1046,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -1063,7 +1076,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -1321,7 +1334,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "m1-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1561,8 +1574,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-auth"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1573,8 +1586,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-browser"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1587,8 +1600,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-config"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1597,8 +1610,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-core"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "libc",
@@ -1609,8 +1622,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-documents"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1619,8 +1632,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-http"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1630,11 +1643,18 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-mcp"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
+ "bytes",
  "clap",
+ "getrandom 0.4.3",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "pk-cli-core",
+ "pk-cli-secrets",
  "rmcp",
  "schemars",
  "serde",
@@ -1644,8 +1664,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-secrets"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "keyring",
@@ -1658,8 +1678,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-selfupdate"
-version = "0.12.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.12.0#05407d0969700ad1157e5622a24690487b0a106a"
+version = "0.15.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.15.0#ebdc7a76205b197e9c0880f3364916097a1b16e8"
 dependencies = [
  "clap",
  "flate2",
@@ -1960,7 +1980,7 @@ version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "cookie",
  "cookie_store",
@@ -2016,18 +2036,28 @@ version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
 dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
  "chrono",
  "futures",
+ "http",
+ "http-body",
+ "http-body-util",
  "indexmap",
  "libc",
  "pastey",
  "pin-project-lite",
+ "rand 0.10.2",
  "schemars",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
  "uuid",
 ]
@@ -2367,6 +2397,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2570,6 +2613,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 

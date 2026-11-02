@@ -103,11 +103,13 @@ enum Command {
     Completions { shell: Shell },
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
-    /// Serve read-only M1 tools to Claude over MCP (stdio).
+    /// Serve read-only M1 tools to Claude over MCP (stdio, or --http).
     ///
     /// For Claude Code (`claude mcp add m1 -- m1f mcp`), Claude Desktop and
-    /// any MCP client. The tools use the session `m1f auth login --browser`
-    /// stored, and never sign in themselves.
+    /// any MCP client. With --http, on 127.0.0.1 behind a bearer token, for
+    /// Claude on the web and mobile through your own Cloudflare Worker and
+    /// tunnel. The tools use the session `m1f auth login --browser` stored,
+    /// and never sign in themselves.
     Mcp(pk_cli_mcp::McpArgs),
 }
 

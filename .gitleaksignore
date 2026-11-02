@@ -1,0 +1,4 @@
+# gitleaks' generic-api-key rule matched a keychain *service name* (not a
+# secret) passed to `M1F_KEYCHAIN_SERVICE` in an earlier commit of this test.
+# The test now names it through a constant; this entry covers that commit.
+99b8d995373af580c466bb5b0efca04dcf344f23:tests/mcp_http.rs:generic-api-key:26

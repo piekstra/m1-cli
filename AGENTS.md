@@ -131,14 +131,19 @@ M1 now refuses).
 
 - Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
   through a fixture `Source` and cli-common's conformance helper;
-  `tests/mcp_stdio.rs` drives the binary over stdio without reading the
-  keychain; `tests/packaging.rs` holds `packaging/mcpb/manifest.json` to the
-  binary.
+  `tests/mcp_stdio.rs` drives the binary over stdio and `tests/mcp_http.rs`
+  over HTTP, without reading the keychain; `tests/packaging.rs` holds
+  `packaging/mcpb/manifest.json` to the binary.
 - Budget: the four definitions stay under 8,000 characters together
   (`the_definitions_stay_small` prints each size). Shorten a description
   before adding a field.
 - Releases attach `m1f-<version>.mcpb`, a Claude Desktop extension with no
   settings: it reads the keychain session.
+- `m1f mcp --http --port <PORT>` (pk-cli-mcp's `http` feature) serves the
+  same tools on 127.0.0.1 behind a bearer token for the deploy-your-own
+  connector's home module (`HOME_M1`); `tests/mcp_http.rs` drives it with
+  the token in `M1F_MCP_TOKEN` and an empty `M1F_KEYCHAIN_SERVICE`, so it
+  reads no keychain.
 
 ## Output contract
 
