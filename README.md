@@ -133,6 +133,7 @@ m1f api query 'query Q($id: ID!) { … }' --variables '{"id":"acct-123"}'
 
 m1f info                                   # capability discovery (cli-info/v1)
 m1f mcp                                    # serve read-only tools to Claude (see Use with Claude)
+m1f mcp --http --port 8731                 # the same, on 127.0.0.1 for your own Cloudflare Worker
 m1f completions zsh
 ```
 
@@ -216,6 +217,25 @@ to the keychain, so its first call raises a keychain prompt for the
 `piekstra.m1f` item; choose **Always Allow**, or every call will ask again.
 
 Any other MCP client that launches a local server can run `m1f mcp`.
+
+**Claude on the web and mobile.** claude.ai reaches tools through a remote
+connector, and M1 sign-in stays on your computer, so `m1f` serves the same
+tools from your computer to a connector you deploy into your own Cloudflare
+account:
+
+```console
+$ m1f mcp --new-token            # once: a bearer token, saved in the keychain and printed for the Worker
+$ m1f mcp --http --port 8731     # serve on 127.0.0.1 only
+```
+
+The connector, [cli-common's `connector/`](https://github.com/piekstra/cli-common/tree/main/connector#tools-from-your-computer-home-modules),
+reaches that port through a Cloudflare Tunnel in your account; its README
+walks through the tunnel, the VPC service, a launchd agent that keeps the
+server running, and the `HOME_M1_TOKEN` secret, with the threat model.
+`--http` binds 127.0.0.1 only, refuses to start without the token, refuses
+any request whose `Host` is not loopback or that carries an `Origin`, and
+serves the read-only tools only. The session never leaves your computer.
+While the computer sleeps, the tools answer that it is offline.
 
 ## Tax documents
 

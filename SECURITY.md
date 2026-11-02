@@ -55,7 +55,8 @@ These are enforced by code and tests, not just convention:
 ## The MCP server
 
 `m1f mcp` serves read-only tools to an MCP client (Claude Code, Claude
-Desktop) over stdio, on this machine only; it opens no port. It uses the
+Desktop) over stdio, on this machine only; it opens no port unless run
+with `--http` (below). It uses the
 session already in the keychain, exactly as the commands do, refreshing it
 in place, and never signs in: a missing or lapsed session is an error asking
 the user to run `m1f auth login --browser` in a terminal. No tool downloads
@@ -63,6 +64,19 @@ a document or emits a document's raw id or link. The Claude Desktop
 extension (`.mcpb`) takes no settings and so holds no credential of its
 own; on macOS its bundled binary needs the user's approval, once, to read
 the `piekstra.m1f` keychain item.
+
+`m1f mcp --http --port <PORT>` serves the same tools over HTTP for the
+user's own Cloudflare Worker, which reaches it through the user's own
+Cloudflare Tunnel (cli-common's `connector/`). It binds 127.0.0.1 only, with
+no flag for another address, and refuses to start without a bearer token of
+32 or more characters, from `M1F_MCP_TOKEN` or the keychain item
+`mcp-http-token` (`piekstra.m1f`), which `m1f mcp --new-token` makes from
+256 random bits and replaces only with `--overwrite`. Every request must
+carry the token (compared in constant time) and a `Host` of `127.0.0.1` or
+`localhost`, and must not carry an `Origin`; there are no CORS headers. Only
+the read-only tools are served (all four are). The session stays in the
+keychain: the Worker sends tool calls and receives results, and never sees
+a cookie or a token for M1.
 
 `M1F_KEYCHAIN_SERVICE` renames the keychain service read, for tests and
 for checking the error paths against an empty service. It carries no
