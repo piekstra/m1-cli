@@ -5,9 +5,10 @@
 //! call made fails on its arguments before any read. The rules the server
 //! enforces are cli-common's, tested there; this holds m1f to them.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -40,38 +41,66 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Each line the server writes to stderr, read on a thread until it closes.
+fn stderr_lines(stderr: ChildStderr) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    rx
+}
+
 struct Server {
     child: Child,
     port: u16,
 }
 
 impl Server {
+    /// The server on a free port. It is ready when its own start line, which
+    /// names the port, is on stderr; something else answering on the port
+    /// does not count. A port taken between `free_port` and the bind is
+    /// retried on another, and any other exit before the start line fails at
+    /// once with the server's stderr. A thread reads stderr to its end, so the
+    /// server never blocks on a full pipe.
     fn start() -> Self {
-        let port = free_port();
-        let mut child = m1f()
-            .args(["mcp", "--http", "--port", &port.to_string()])
-            .env("M1F_MCP_TOKEN", TOKEN)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("m1f starts");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).is_err() {
-            if let Some(status) = child.try_wait().unwrap() {
-                let mut err = String::new();
-                child
-                    .stderr
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut err)
-                    .unwrap();
-                panic!("m1f exited ({status}) before listening: {err}");
+        for _ in 0..3 {
+            let port = free_port();
+            let mut child = m1f()
+                .args(["mcp", "--http", "--port", &port.to_string()])
+                .env("M1F_MCP_TOKEN", TOKEN)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("m1f starts");
+            let lines = stderr_lines(child.stderr.take().unwrap());
+            let ready = format!("at http://127.0.0.1:{port}/mcp");
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut seen = String::new();
+            loop {
+                match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(line) if line.contains(&ready) => return Self { child, port },
+                    Ok(line) => {
+                        seen.push_str(&line);
+                        seen.push('\n');
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        let status = child.wait().unwrap();
+                        if seen.contains("listening on") {
+                            break; // the port was taken: try another
+                        }
+                        panic!("m1f exited ({status}) before serving: {seen}");
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        let _ = child.kill();
+                        panic!("m1f was not serving on {port} within 20 s: {seen}");
+                    }
+                }
             }
-            assert!(Instant::now() < deadline, "m1f did not listen on {port}");
-            std::thread::sleep(Duration::from_millis(50));
         }
-        Self { child, port }
+        panic!("no free port could be bound in three tries");
     }
 
     /// One POST /mcp: the status and the JSON body.

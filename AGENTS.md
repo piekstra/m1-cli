@@ -132,8 +132,8 @@ M1 now refuses).
 - Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
   through a fixture `Source` and cli-common's conformance helper;
   `tests/mcp_stdio.rs` drives the binary over stdio and `tests/mcp_http.rs`
-  over HTTP, without reading the keychain; `tests/packaging.rs` holds `packaging/mcpb/manifest.json` to the
-  binary.
+  over HTTP, without reading the keychain; `tests/packaging.rs` holds
+  `packaging/mcpb/manifest.json` to the binary.
 - Budget: the four definitions stay under 8,000 characters together
   (`the_definitions_stay_small` prints each size). Shorten a description
   before adding a field.
