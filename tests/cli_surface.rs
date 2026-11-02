@@ -38,6 +38,7 @@ fn help_lists_the_standard_surface() {
         .stdout(predicate::str::contains("summary"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("api"))
+        .stdout(predicate::str::contains("mcp"))
         .stdout(predicate::str::contains("self-update"))
         .stdout(predicate::str::contains("completions"))
         .stdout(predicate::str::contains("info"));
@@ -79,6 +80,7 @@ fn every_subcommand_help_renders() {
         vec!["status"],
         vec!["api"],
         vec!["api", "query"],
+        vec!["mcp"],
         vec!["self-update"],
         vec!["completions"],
     ];
@@ -140,6 +142,7 @@ fn info_emits_cli_info_v1() {
         "summary",
         "status",
         "api",
+        "mcp",
     ] {
         assert!(caps.contains(&expected), "missing capability {expected}");
     }

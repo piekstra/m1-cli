@@ -48,6 +48,7 @@ jobs:
           ./target/release/m1f --version
           ./target/release/m1f --help > /dev/null
           ./target/release/m1f info > /dev/null
+          ./target/release/m1f mcp --list-tools > /dev/null
 
   security:
     name: security

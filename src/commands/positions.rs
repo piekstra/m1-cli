@@ -66,7 +66,7 @@ pub fn list(ctx: &Ctx, args: &ListArgs) -> Result<(), CliError> {
 /// `avg_price` → `average_price`). The node `id` is a relay blob
 /// (`Position:{"accountId":…,"cusip":…}`, observed live 2026-09-23); the row
 /// carries the decoded `cusip`, never the blob.
-fn position_row(node: &Value) -> Result<Value, CliError> {
+pub(crate) fn position_row(node: &Value) -> Result<Value, CliError> {
     let h = holdings::holding_dto(node)?;
     let symbol = h
         .get("symbol")

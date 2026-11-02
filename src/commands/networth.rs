@@ -39,10 +39,9 @@ const UNMATCHED_NAME: &str = "Invest (not matched to an account)";
 const TABLE_COLUMNS: &[&str] = &["product", "name", "type", "total"];
 
 pub fn show(ctx: &Ctx) -> Result<(), CliError> {
-    let data = ctx.read(|c| c.execute(graphql::NET_WORTH, json!({}), Some("NetWorthOverview")))?;
-    let balances = parse::at(&data, &["viewer", "overview", "balances"])?;
+    let balances = fetch_balances(ctx)?;
     let account_nodes = accounts::fetch_nodes(ctx)?;
-    let built = networth_dto(balances, &account_nodes)?;
+    let built = networth_dto(&balances, &account_nodes)?;
     if let Some(diff) = &built.unmatched {
         if !ctx.common.quiet {
             eprintln!(
@@ -74,17 +73,23 @@ pub fn show(ctx: &Ctx) -> Result<(), CliError> {
     Ok(())
 }
 
+/// M1's home-screen rollup, `viewer.overview.balances`, as sent.
+pub fn fetch_balances(ctx: &Ctx) -> Result<Value, CliError> {
+    let data = ctx.read(|c| c.execute(graphql::NET_WORTH, json!({}), Some("NetWorthOverview")))?;
+    parse::at(&data, &["viewer", "overview", "balances"]).cloned()
+}
+
 /// The `net-worth/v1` DTO, and the Invest difference no account covers.
-struct Built {
-    dto: Value,
+pub(crate) struct Built {
+    pub(crate) dto: Value,
     /// Set when M1's Invest figure and the sum of its accounts differ.
-    unmatched: Option<Money>,
+    pub(crate) unmatched: Option<Money>,
 }
 
 /// Map `BalancesOverview` plus the login's account nodes to the
 /// `net-worth/v1` DTO. Pure, so it is contract-tested offline like every
 /// other read shape.
-fn networth_dto(b: &Value, account_nodes: &[Value]) -> Result<Built, CliError> {
+pub(crate) fn networth_dto(b: &Value, account_nodes: &[Value]) -> Result<Built, CliError> {
     let mut dto = json!({});
     if let Some(total) = parse::money_at(b, "total") {
         dto["total"] = serde_json::to_value(total).unwrap_or(Value::Null);

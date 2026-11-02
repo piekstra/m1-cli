@@ -56,7 +56,7 @@ pub struct ListArgs {
 }
 
 /// Map the friendly flag spelling onto the enum member.
-fn type_filter(flag: Option<&str>) -> Result<Vec<&'static str>, CliError> {
+pub(crate) fn type_filter(flag: Option<&str>) -> Result<Vec<&'static str>, CliError> {
     let Some(flag) = flag else {
         return Ok(DOC_TYPES.to_vec());
     };
@@ -307,7 +307,11 @@ fn fetch_document(ctx: &Ctx, url: &str) -> Result<Vec<u8>, CliError> {
 /// All three of `documentType`, `startDate`, `endDate` are sent on every
 /// request because the resolver requires them (live finding — introspection
 /// says nullable, the resolver says otherwise).
-fn fetch(ctx: &Ctx, range: &RangeArgs, types: &[&str]) -> Result<Vec<Fetched>, CliError> {
+pub(crate) fn fetch(
+    ctx: &Ctx,
+    range: &RangeArgs,
+    types: &[&str],
+) -> Result<Vec<Fetched>, CliError> {
     let page_size = range.limit.map(|n| n.min(PAGE_SIZE)).unwrap_or(PAGE_SIZE);
     let start = range.since.clone().unwrap_or_else(|| EARLIEST.to_string());
     let end = range
@@ -372,7 +376,7 @@ fn in_window(date: Option<&str>, range: &RangeArgs) -> bool {
     after && before
 }
 
-fn document_of(v: &Value) -> Result<Fetched, CliError> {
+pub(crate) fn document_of(v: &Value) -> Result<Fetched, CliError> {
     let raw_id = parse::id(v, "id")?;
     let inner = decode_id_blob(&raw_id);
 

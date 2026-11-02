@@ -52,6 +52,22 @@ These are enforced by code and tests, not just convention:
   the DTO, out of `--json`, and out of logs. The download URL is used in-band
   and never printed.
 
+## The MCP server
+
+`m1f mcp` serves read-only tools to an MCP client (Claude Code, Claude
+Desktop) over stdio, on this machine only; it opens no port. It uses the
+session already in the keychain, exactly as the commands do, refreshing it
+in place, and never signs in: a missing or lapsed session is an error asking
+the user to run `m1f auth login --browser` in a terminal. No tool downloads
+a document or emits a document's raw id or link. The Claude Desktop
+extension (`.mcpb`) takes no settings and so holds no credential of its
+own; on macOS its bundled binary needs the user's approval, once, to read
+the `piekstra.m1f` keychain item.
+
+`M1F_KEYCHAIN_SERVICE` renames the keychain service read, for tests and
+for checking the error paths against an empty service. It carries no
+secret.
+
 ## Revoking access
 
 `m1f auth logout --forget` clears the stored tokens and the config identity.

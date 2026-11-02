@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.9.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.12.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -117,6 +117,29 @@ If a real write is ever added it needs §1.3's confirmation rules (prompt unless
 `--force`, exit 6 non-interactively) and a same-commit update to `SECURITY.md`,
 `README.md`, and this file.
 
+## MCP tools
+
+`m1f mcp` (src/mcp.rs) serves four read-only tools under cli-common's MCP
+profile (DESIGN.md §1.9): `m1_portfolio`, `m1_activity`, `m1_documents`
+(listed, never downloaded) and `m1_realized_gains`. They read through the
+`Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the commands
+use, one read at a time, because a refresh rotates the stored refresh token
+and two refreshing at once would present the same one twice. The tools
+never sign in: an auth error asks the user to run `m1f auth login --browser`
+in a terminal (the profile's standard remedy names plain `auth login`, which
+M1 now refuses).
+
+- Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
+  through a fixture `Source` and cli-common's conformance helper;
+  `tests/mcp_stdio.rs` drives the binary over stdio without reading the
+  keychain; `tests/packaging.rs` holds `packaging/mcpb/manifest.json` to the
+  binary.
+- Budget: the four definitions stay under 8,000 characters together
+  (`the_definitions_stay_small` prints each size). Shorten a description
+  before adding a field.
+- Releases attach `m1f-<version>.mcpb`, a Claude Desktop extension with no
+  settings: it reads the keychain session.
+
 ## Output contract
 
 - `--json` valid on every command; exactly **one** `schema`-tagged DTO per
@@ -187,6 +210,8 @@ src/graphql.rs     operation documents + the read-only guard
 src/parse.rs       response → DTO helpers (nodes, money, dates, require_node)
 src/commands/      one module per command group (incl. lots, status, and the
                    household positions/dividends reads over accounts::scope)
+src/mcp.rs         `m1f mcp`: the MCP tools over a `Source` seam
+packaging/mcpb/    the Claude Desktop extension manifest
 docs/api.md        endpoints, auth flow, traps, live-verified operation table
 ```
 
@@ -197,3 +222,11 @@ binary across the whole surface — every command, `--json`, the error paths.
 **Reinstall after every fix**: "done" means installed, not compiled, and a stale
 `~/.cargo/bin/m1f` will happily serve old behavior. Prefer `m1f api query …`
 over ad-hoc curl, since that exercises the real code path.
+
+For the MCP tools, drive the installed `m1f mcp` over stdio with JSON-RPC
+lines (`initialize`, `tools/list`, `tools/call`); `m1f mcp --list-tools`
+prints the definitions without a credential. To see the sign-in error
+without opening the real session, set `M1F_KEYCHAIN_SERVICE` to a service
+that holds nothing: a missing keychain item is read without a prompt and
+fails as "not logged in". The variable only renames which entry is read; it
+never carries a session.

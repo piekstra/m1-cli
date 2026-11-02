@@ -132,6 +132,7 @@ m1f api query - < query.graphql
 m1f api query 'query Q($id: ID!) { … }' --variables '{"id":"acct-123"}'
 
 m1f info                                   # capability discovery (cli-info/v1)
+m1f mcp                                    # serve read-only tools to Claude (see Use with Claude)
 m1f completions zsh
 ```
 
@@ -164,6 +165,57 @@ Every command takes `--json`. Machine output goes to stdout as a single
 ```sh
 m1f holdings list --json | jq '.items[] | {symbol, value: .value.amount}'
 ```
+
+## Use with Claude
+
+`m1f mcp` serves four read-only tools over MCP, so Claude can answer
+questions about your own M1 accounts. There is no hosted service: the tools
+run on your computer, in your copy of `m1f`, and call M1's backend directly
+with the session `m1f auth login --browser` stored in your OS keychain.
+
+| Tool | Answers |
+| --- | --- |
+| `m1_portfolio` | What am I worth at M1, and what do I hold? Net worth, each account's total, and the positions, narrowed by `account` (its name) or `symbol` |
+| `m1_activity` | What happened over a period? Trades, deposits, withdrawals and dividends by `since`/`until` dates (year to date by default), `account`, `type` (`Trade`, `Cash`, `Position`) and `symbol` |
+| `m1_documents` | Which statements and tax forms exist? Listed by `type` (`tax-form` for 1099s) and `since`/`until`; never downloaded (`m1f documents download` does that) |
+| `m1_realized_gains` | What did I realize this year? Closed lots by sale date, with exact short-term, long-term and wash-sale totals; taxable accounts unless `account` names an IRA |
+
+Results are concise by default (`response_format: "detailed"` adds ids and
+provider detail), 25 records a page with a cursor for more, and never larger
+than about 32,000 characters. Accounts are named, not numbered. Descriptions
+come from M1 and other parties; the server tells Claude to treat them as
+data, not instructions.
+
+**Sign in first.** M1 sign-in is through a browser, so no settings form can
+hold it. Install `m1f` and run `m1f auth login --browser` in a terminal
+(see [Getting started](#getting-started)). Both ways of connecting Claude
+below then use that session from the OS keychain (service `piekstra.m1f`),
+and refresh it in place as the commands do. If the session is missing or has
+lapsed, the tools say so and ask you to run `m1f auth login --browser` in a
+terminal; they never sign in by themselves.
+
+**Claude Code.** Add the `m1-cli` plugin from the
+[piekstra plugin marketplace](https://github.com/piekstra/claude-plugins):
+
+```console
+$ claude plugin marketplace add piekstra/claude-plugins
+$ claude plugin install m1-cli@piekstra-plugins
+```
+
+or register the server yourself:
+
+```console
+$ claude mcp add m1 -- m1f mcp
+```
+
+**Claude Desktop.** Download `m1f-<version>.mcpb` from the
+[latest release](https://github.com/piekstra/m1-cli/releases/latest) and
+open it. It asks for nothing: the bundled `m1f` reads the session your
+installed `m1f` stored. On macOS the bundled binary is a different program
+to the keychain, so its first call raises a keychain prompt for the
+`piekstra.m1f` item; choose **Always Allow**, or every call will ask again.
+
+Any other MCP client that launches a local server can run `m1f mcp`.
 
 ## Tax documents
 
