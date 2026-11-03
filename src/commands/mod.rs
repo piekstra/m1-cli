@@ -336,8 +336,52 @@ pub fn paginate(rows: Vec<Value>, date_key: &str, range: &RangeArgs) -> Vec<Valu
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
     use std::sync::{Arc, Barrier, Mutex};
     use std::time::Duration;
+
+    /// A read the edge blocks makes no grant: a renewal could only rotate the refresh
+    /// token for nothing. A 401 or M1's own JSON refusal still renews, once.
+    #[test]
+    fn only_a_refusal_renews_the_session() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        let read = crate::client::tests::read_answer;
+        for (status, body) in [
+            (200, PAGE),
+            (403, PAGE),
+            (404, PAGE),
+            (403, ""),
+            (403, "Forbidden"),
+            (429, PAGE),
+            (503, PAGE),
+        ] {
+            let grants = Cell::new(0);
+            let err = with_reauth(
+                || read(status, body),
+                || {
+                    grants.set(grants.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(grants.get(), 0, "{status} {body}: {err}");
+            assert_eq!(err.exit_code(), 5, "{status} {body}: {err}");
+        }
+        let refused = r#"{"errors":[{"isAuthError":true,"code":"AUTH_ERROR","message":"No."}]}"#;
+        for (status, body) in [(401, PAGE), (401, ""), (403, "{}"), (200, refused)] {
+            let grants = Cell::new(0);
+            let err = with_reauth(
+                || read(status, body),
+                || {
+                    grants.set(grants.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(grants.get(), 1, "{status} {body}: {err}");
+            assert_eq!(err.exit_code(), 3, "{status} {body}: {err}");
+        }
+    }
 
     fn rows() -> Vec<Value> {
         vec![

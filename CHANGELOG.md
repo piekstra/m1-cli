@@ -49,8 +49,11 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.20.0.
 - After a Cloudflare page or a 403 with no JSON, that warning says a new sign-in may not
   help, because the block is on the client rather than the session: wait or try another
   network, and only if reads still fail after that, run `m1f auth login --browser
-  --overwrite`. An ordinary read's HTML error says the same, still exit 3, unless the
-  status is a 401, and so does the MCP tools' fix.
+  --overwrite`. An ordinary read's error, a renewal's and the MCP tools' fix say the same.
+- An HTML page on an ordinary read is now exit 5, where it was exit 3, and it no longer
+  renews the session: it is not M1's own refusal, and a renewal would rotate the refresh
+  token for nothing. A 401 whatever its body is exit 3 after one renewal, as M1's own JSON
+  refusal is. A 401 with neither JSON nor HTML was exit 5.
 - The MCP tools' sign-in fix names `m1f auth login --browser --overwrite`, because a
   lapsed session is still stored and the command refuses without the flag.
 - A login result under `--json` now always carries `verified`, a boolean: `true` when a

@@ -98,13 +98,16 @@ render partial data as if it were complete.
   and the `--json` result says `verified: false` (`login_result`, which sets
   `AuthStatus::verified`, always a boolean there and left off `auth status`), as
   it does for `--no-verify` (`stored_unread`), `auth set-credential` and the password
-  login. The page held the only copy, so the session is stored. Ordinary reads keep
-  `html_error`, exit 3, and a piped session stores nothing unless its read proves it.
+  login. The page held the only copy, so the session is stored. Ordinary reads use
+  `html_error`, and a piped session stores nothing unless its read proves it.
 - **Signing in does not clear a block at the edge.** An HTML page on any status but a
   401, or a 403 with no JSON, is `WindowReadError::Edge` to the hook. Its warning, an
-  ordinary read's `html_error` and the MCP fix (`AFTER_A_BLOCK`) all put a new sign-in
-  last (`client::edge_block_advice`), or the owner spends sign-ins in a loop that exits
-  0 each time. A 429, a 5xx or a dropped connection keeps "if reads keep failing".
+  ordinary read's error, a renewal's (`auth0::token_response`) and the MCP fix
+  (`AFTER_A_BLOCK`) all put a new sign-in last (`client::edge_block_advice`), or the
+  owner spends sign-ins in a loop that exits 0 each time. On a read it is exit 5, not
+  `Auth`: `with_reauth` renews on any `Auth`, which would rotate the refresh token for
+  nothing. Only a 401 or M1's own JSON is `Auth`. A 429, a 5xx or a dropped connection
+  keeps "if reads keep failing".
 - **`auth logout` removes the kept profile, and no test may reach the real one.**
   Its removal goes through the `run_logout` seam: the binary binds
   `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir

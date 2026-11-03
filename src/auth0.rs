@@ -449,16 +449,7 @@ fn token_response(
     old_refresh: &str,
 ) -> Result<TokenBundle, CliError> {
     let Ok(v) = serde_json::from_str::<Value>(body) else {
-        return Err(CliError::Upstream(
-            if crate::client::looks_like_html(body) {
-                format!(
-                    "M1's sign-in service answered the token refresh with an HTML page (HTTP \
-                 {status}) — a bot check stood in the way; retry later, or {RECAPTURE}"
-                )
-            } else {
-                format!("unparseable answer from M1's sign-in service (HTTP {status})")
-            },
-        ));
+        return Err(token_answer_with_no_json(status, body));
     };
     if (200..300).contains(&status) {
         let Some(access) = str_at(&v, "access_token") else {
@@ -503,10 +494,106 @@ fn token_response(
     })
 }
 
+/// A token answer that is not the tenant's JSON. A 429 or a 5xx is read by its status
+/// first and asks for no sign-in, a 401 refuses the refresh token, and an HTML page or a
+/// 403 with no JSON gets the advice an ordinary read's HTML error gives, because a block
+/// at this endpoint is no more cleared by signing in than one on a read.
+fn token_answer_with_no_json(status: u16, body: &str) -> CliError {
+    let html = crate::client::looks_like_html(body);
+    match status {
+        429 => CliError::Upstream(
+            "M1's sign-in service is rate limiting token refreshes (HTTP 429) — wait before \
+             retrying"
+                .into(),
+        ),
+        500..=599 if html => CliError::Upstream(format!(
+            "M1's sign-in service answered the token refresh with HTTP {status} — wait before \
+             retrying"
+        )),
+        401 => CliError::Auth(format!(
+            "M1's sign-in service refused the token refresh (HTTP {status}); {RECAPTURE}"
+        )),
+        _ if html => CliError::Upstream(format!(
+            "M1's sign-in service answered the token refresh with an HTML page (HTTP {status}), \
+             most likely a bot check. {}",
+            crate::client::edge_block_advice()
+        )),
+        403 => CliError::Upstream(format!(
+            "M1's sign-in service answered the token refresh with HTTP {status} and no JSON, \
+             most likely a block at the edge. {}",
+            crate::client::edge_block_advice()
+        )),
+        _ => CliError::Upstream(format!(
+            "unparseable answer from M1's sign-in service (HTTP {status})"
+        )),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+
+    const BLOCK_PAGE: &str = "<!DOCTYPE html><html><title>Attention Required</title></html>";
+
+    /// The token endpoint's answer when the edge blocks it.
+    pub(crate) fn blocked_token_answer() -> CliError {
+        token_response(403, BLOCK_PAGE, &Auth0Grant::default(), "x").unwrap_err()
+    }
+
+    /// A renewal the edge blocks reaches the owner with the advice a blocked read gives:
+    /// `with_reauth` returns the renewal's error, not the read's.
+    #[test]
+    fn a_block_at_the_token_endpoint_gives_the_reads_advice() {
+        let err = pk_cli_auth::reauth::with_reauth(
+            || crate::client::tests::read_answer(401, BLOCK_PAGE),
+            || Err(blocked_token_answer()),
+        )
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err}");
+        let text = err.to_string();
+        assert!(text.contains(&crate::client::edge_block_advice()), "{text}");
+        assert!(!text.contains("retry later, or"), "{text}");
+    }
+
+    #[test]
+    fn a_token_answer_with_no_json_is_read_by_its_status_first() {
+        let g = Auth0Grant::default();
+        let advice = crate::client::edge_block_advice();
+        for (status, body) in [
+            (200, BLOCK_PAGE),
+            (403, BLOCK_PAGE),
+            (403, ""),
+            (403, "Forbidden"),
+        ] {
+            let err = token_response(status, body, &g, "x").unwrap_err();
+            assert_eq!(err.exit_code(), 5, "{status} {body}: {err}");
+            assert!(err.to_string().contains(&advice), "{status} {body}: {err}");
+        }
+        for (status, body) in [
+            (429, BLOCK_PAGE),
+            (429, ""),
+            (503, BLOCK_PAGE),
+            (502, "bad gateway"),
+            (503, ""),
+        ] {
+            let err = token_response(status, body, &g, "x").unwrap_err();
+            assert_eq!(err.exit_code(), 5, "{status} {body}: {err}");
+            assert!(
+                !err.to_string().contains("auth login"),
+                "{status} {body}: {err}"
+            );
+        }
+        for body in [BLOCK_PAGE, "", "Unauthorized"] {
+            let refused = token_response(401, body, &g, "x").unwrap_err();
+            assert_eq!(refused.exit_code(), 3, "{refused}");
+            assert!(
+                refused.to_string().contains(&format!("`{RELOGIN}`")),
+                "{refused}"
+            );
+            assert!(!refused.to_string().contains(&advice), "{refused}");
+        }
+    }
 
     /// A JWT-shaped dummy with the given claims and a fake signature. Built
     /// at test time so no token-shaped literal sits in the source.

@@ -675,17 +675,37 @@ fn a_missing_session_asks_for_the_browser_login_in_a_terminal() {
 fn a_block_at_the_edge_does_not_ask_for_a_new_sign_in_first() {
     let t = tools();
     const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+    for blocked in [
+        crate::client::tests::read_answer(403, PAGE).unwrap_err(),
+        crate::client::tests::read_answer(403, "Forbidden").unwrap_err(),
+        crate::auth0::tests::blocked_token_answer(),
+    ] {
+        *t.source().fail.lock().unwrap() = Some(blocked);
+        let text = err(&call(&t, PORTFOLIO_TOOL, json!({}))).to_string();
+        assert!(text.starts_with("upstream:"), "{text}");
+        assert!(
+            text.contains("Wait or try another network, then call the tool again once"),
+            "{text}"
+        );
+        assert!(text.contains("Only if it still fails after that"), "{text}");
+        assert!(text.contains("never sign in"), "{text}");
+        assert!(!text.contains("in a terminal, then call"), "{text}");
+    }
+}
+
+/// A read refused with a 401 still asks for the sign-in.
+#[test]
+fn an_html_401_asks_for_the_sign_in() {
+    let t = tools();
+    const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
     *t.source().fail.lock().unwrap() =
-        Some(crate::client::tests::read_answer(403, PAGE).unwrap_err());
+        Some(crate::client::tests::read_answer(401, PAGE).unwrap_err());
     let text = err(&call(&t, PORTFOLIO_TOOL, json!({}))).to_string();
     assert!(text.starts_with("auth:"), "{text}");
     assert!(
-        text.contains("Wait or try another network, then call the tool again"),
+        text.contains("Ask the user to run `m1f auth login --browser --overwrite` in a terminal"),
         "{text}"
     );
-    assert!(text.contains("Only if it still fails after that"), "{text}");
-    assert!(text.contains("never sign in"), "{text}");
-    assert!(!text.contains("in a terminal, then call"), "{text}");
 }
 
 #[test]

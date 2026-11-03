@@ -49,8 +49,8 @@ const SIGN_IN: &str = "Ask the user to run `m1f auth login --browser --overwrite
 
 /// The fix for an answer shaped like a block at the edge, where a new sign-in comes last
 /// ([`crate::client::edge_block_advice`]).
-const AFTER_A_BLOCK: &str = "Wait or try another network, then call the tool again. Only if it \
-                             still fails after that, ask the user to run `m1f auth login \
+const AFTER_A_BLOCK: &str = "Wait or try another network, then call the tool again once. Only if \
+                             it still fails after that, ask the user to run `m1f auth login \
                              --browser --overwrite` in a terminal. Tools never sign in or create \
                              credentials themselves";
 
@@ -193,8 +193,8 @@ impl<S: Source> M1Tools<S> {
 /// login.
 fn tool_err(e: CliError) -> ToolError {
     match e {
-        CliError::Auth(m) if m.contains(crate::client::SIGN_IN_MAY_NOT_HELP) => {
-            ToolError::auth(m).with_fix(AFTER_A_BLOCK)
+        CliError::Upstream(m) if m.contains(crate::client::SIGN_IN_MAY_NOT_HELP) => {
+            ToolError::upstream(m).with_fix(AFTER_A_BLOCK)
         }
         CliError::Auth(m) => ToolError::auth(m).with_fix(SIGN_IN),
         other => other.into(),

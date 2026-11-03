@@ -143,7 +143,9 @@ synthetic copy of the shape.
    `client_id`, `refresh_token`, form-encoded, `Origin:
    https://dashboard.m1.com`), keeps the rotated refresh token, and retries
    once. `invalid_grant` is exit 3 naming the recapture (`m1f auth login
-   --browser --overwrite`); 429, an HTML answer and 5xx are exit 5.
+   --browser --overwrite`), and so is a 401 whatever its body. A 429, a 5xx and any
+   other HTML answer are exit 5. An HTML page on the read itself is not an auth failure
+   unless its status is a 401, so it makes no renewal (Trap 3).
 
 `auth status` reports `method: browser-session` for a session from either
 route: the stored bundle records that it came from Auth0 (its `auth0` field,
@@ -251,22 +253,26 @@ one costs one more sign-in, the same as discarding it, and a good one costs none
 `refuse_overwrite` runs before the window, so an unverified session never replaces a
 stored one without `--overwrite`.
 
-What the warning says next depends on the answer:
+What the warning says next, and what a later read does with the same answer:
 
-| Answer | What it says |
-| --- | --- |
-| An HTML page on any status but a 401, or a 403 with no JSON (`client::edge_in_window`) | A new sign-in may not help, because a block like this is on the client rather than the session: wait or try another network, and only if reads still fail after that, run `m1f auth login --browser --overwrite`. |
-| Anything else that cannot decide: a 429, a 5xx, a dropped connection, an empty or unparseable 2xx, no verdict | A later read may settle it; if reads keep failing, run `m1f auth login --browser --overwrite`. |
+| Answer | The sign-in's warning | An ordinary read |
+| --- | --- | --- |
+| An HTML page on any status but a 401, or a 403 with no JSON (`client::edge_in_window`) | A new sign-in may not help, because a block like this is on the client rather than the session: wait or try another network, and only if reads still fail after that, run `m1f auth login --browser --overwrite`. | The same advice. Exit 5, no renewal. |
+| Anything else that cannot decide: a 429, a 5xx, a dropped connection, an empty or unparseable 2xx, no verdict | A later read may settle it; if reads keep failing, run `m1f auth login --browser --overwrite`. | Exit 5 where it fails, no renewal, no sign-in advice. |
+| A 401 whatever its body, or M1's own JSON refusal | Keeps waiting and stores nothing. | One renewal, then exit 3 naming the login. |
 
 Signing in does not clear a block on this client, and each attempt spends a sign-in and
-replaces the stored session, exiting 0 each time. So an ordinary read's HTML error
-(`client::html_error`, still exit 3) and the MCP tools' fix say what the first row says.
-An HTML 401 on an ordinary read refuses the token, so it names the login at once.
+replaces the stored session, exiting 0 each time. So a renewal's answer from the token
+endpoint (`auth0::token_response`) and the MCP tools' fix give the first row's advice too.
+An HTML page is exit 5 on a read because it is not M1's own refusal, and exit 5 means
+retry later, which is what the advice says. No capture has recorded a lapsed session
+answering HTML on `lens.m1.com` (Trap 3), and `with_reauth` renews on any `Auth`, so as
+`Auth` each blocked read would rotate the refresh token for nothing.
 
 **UNVERIFIED-LIVE:** a bot check on this read has not been seen. Reading an HTML page
 as no verdict rests on Trap 3 and Trap 7, not on a capture of this read.
 
-An ordinary read still takes an HTML page as exit 3 (Trap 3), and a piped session stores
+An ordinary read takes an HTML page as exit 5 (Trap 3), and a piped session stores
 nothing on a read that did not prove it. `--browser --no-verify` skips this read; the
 expiry check still runs, and replacing a stored session still needs `--overwrite`.
 
@@ -331,8 +337,9 @@ refreshToken } }`. Verified live:
 ## Trap 3: HTML where JSON should be
 
 A Cloudflare challenge returns an HTML interstitial, not GraphQL. `m1f` detects
-a non-JSON body and reports it as an auth failure that puts a new sign-in last, since
-signing in does not clear a block on this client (`client::html_error`).
+an HTML body and reports it as exit 5 with no renewal, putting a new sign-in last, since
+signing in does not clear a block on this client (`client::html_error`). An HTML 401
+refuses the token, so it renews once and is then exit 3.
 Not seen live in this session, but the guard stays. A 429 or a 5xx is read by its
 status first, whatever its body, and is exit 5: a throttle or an outage says
 nothing about the session. A browser sign-in's confirm hook takes an HTML page as no
@@ -402,11 +409,12 @@ What `m1f` does with it:
   this trap and the browser-session login, and stores nothing
   (`client::legacy_login_blocked`). It does **not** retry: a second password
   submission spends a lockout attempt for the same 403.
-- Every other HTML answer (a read, a legacy refresh) is exit 3 (`client::html_error`),
-  except a 429 or a 5xx, which is exit 5 (Trap 3), and the read a browser sign-in's
-  confirm hook makes, which stores the session unverified. It says a new sign-in may
-  not help, to wait or try another network, and only if reads still fail after that to
-  run `m1f auth login --browser --overwrite`. An HTML 401 names that login at once.
+- Every other HTML answer (a read, a legacy refresh) is exit 5 with no renewal
+  (`client::html_error`), except the read a browser sign-in's confirm hook makes, which
+  stores the session unverified. It says a new sign-in may not help, to wait or try
+  another network, and only if reads still fail after that to run `m1f auth login
+  --browser --overwrite`. An HTML 401 is exit 3 and names that login at once. A 429 or a
+  5xx is exit 5 with no sign-in advice (Trap 3).
 - `info` reports `auth.method: browser-session` and `m1f auth login --browser`
   as the hint.
 
