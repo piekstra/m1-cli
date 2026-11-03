@@ -51,7 +51,7 @@
 //! only holder: `auth login --browser` closes the dashboard tab the moment the
 //! session is read and then quits Chrome, and the DevTools steps have the owner
 //! sign in in a private window and close it after copying. The profile `--browser`
-//! keeps still holds the page's copy, which goes stale at `m1f`'s next renewal
+//! keeps holds no copy between runs: its site storage goes around every launch
 //! (docs/api.md, "The kept profile"). Whether M1's tenant rotates, and how long
 //! its access tokens live, has not been observed (docs/api.md, "What is still
 //! unverified").
@@ -99,10 +99,9 @@ pub const DASHBOARD_HOST: &str = "dashboard.m1.com";
 /// takes both ([`parse_browser_capture`], [`parse_captured`]). docs/api.md
 /// quotes it verbatim.
 ///
-/// It only reads, though the profile outlives the window. A removal from here
-/// is no guarantee: it may not reach the disk before Chrome stops, and the
-/// evaluation runs at least once, so it could also lose a session the capture
-/// never took. Whether what it reads is worth taking is the confirm hook's call
+/// It only reads. The launch clears the profile's site storage
+/// (`commands::auth::browser_launch`), and the evaluation runs at least once, so a
+/// removal from here could lose a session the capture never took. Whether what it reads is worth taking is the confirm hook's call
 /// (`commands::auth::confirm_candidate`).
 pub const CAPTURE_EXPRESSION: &str = "(() => { const k = Object.keys(localStorage).find(k => \
      k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && \
@@ -700,8 +699,8 @@ pub(crate) mod tests {
         ] {
             assert!(CAPTURE_EXPRESSION.contains(&needle), "{needle}");
         }
-        // It only reads: a removal may not reach the disk, and the evaluation
-        // can run more than once.
+        // It only reads: the evaluation can run more than once, so a removal could
+        // lose a session the capture never took.
         for write in ["removeItem", "setItem", ".clear("] {
             assert!(!CAPTURE_EXPRESSION.contains(write), "{write}");
         }

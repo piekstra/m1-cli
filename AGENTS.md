@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.18.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.19.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -74,24 +74,25 @@ render partial data as if it were complete.
   live session or token itself, and never "retries" the password login to
   see whether the 403 cleared — each attempt is a lockout risk.
 - **The window's profile is kept between sign-ins**, so M1 remembers the device
-  and a re-login often needs no input (`--fresh-profile` opts out for one run). The
-  session's tokens stay in it, and a retired refresh token can get the whole family
-  revoked. So `commands::auth::confirm_candidate` lets the tab close only on an
-  unexpired session M1 accepts, and never renews a candidate. Keep that gate: without
-  it a re-login reads the old session, closes the window and fails, run after run.
+  and a re-login often needs no input (`--fresh-profile` opts out for one run).
+  `commands::auth::browser_launch` turns on `clear_site_storage`: the page keeps the
+  session's tokens in `localStorage`, and a retired refresh token left there can get
+  the whole family revoked. Keep it on. `commands::auth::confirm_candidate` lets the
+  tab close only on an unexpired session M1 accepts, and never renews a candidate.
   `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read. Do not add a removal
-  to the expression: it may not reach the disk, and the evaluation can run more than
-  once. Clearing site storage around a launch belongs to cli-common.
-- **It is a full Chrome profile** (history with full URLs, HTTP cache, site
-  storage), `0700` its only protection beyond Chrome's cookie encryption, which on
+  to the expression: the evaluation can run more than once, and clearing site storage
+  belongs to cli-common.
+- **It is a full Chrome profile** (cookies, history with full URLs, HTTP cache),
+  `0700` its only protection beyond Chrome's cookie encryption, which on
   Linux with no desktop keyring uses a fixed, publicly known key. It outlives a
   failed sign-in, so every failure from the window on says so: they all pass through
   `through_the_window` into `failed_sign_in`, so add a new step there. `auth status`
-  does not report it: cli-common has no public way to ask whether one exists.
+  reports it as `browser_profile` through `browser_profile_status`, whose tests fill
+  the seam with `profile_exists_in`. It says a profile is kept, not that anything is
+  signed in there.
 - **A read that cannot decide ends the wait.** In `confirm_candidate` a 429 or a
   5xx is `Confirm::Fail`, whatever its body (`client::read_reply` reads the status
-  before the HTML), and only `viewer.isAuthenticated: true` is `Ready`. `--browser
-  --no-verify` skips that read, so a kept profile refuses it.
+  before the HTML), and only `viewer.isAuthenticated: true` is `Ready`.
 - **`auth logout` removes the kept profile, and no test may reach the real one.**
   Its removal goes through the `run_logout` seam: the binary binds
   `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir

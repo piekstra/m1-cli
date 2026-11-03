@@ -135,12 +135,12 @@ enum AuthCmd {
     ///
     /// The kept profile (owner-only, on disk) lets M1 remember this device, so
     /// a later sign-in often needs no input: the window opens, the session is
-    /// read and the window closes. It is a full Chrome profile: M1's cookies, the
-    /// session's tokens, browsing history with full URLs, the HTTP cache and site
-    /// storage stay, after a failed sign-in too, until `m1f auth logout` removes
-    /// it. --fresh-profile signs in through a scratch
-    /// profile instead, removed when the window closes, and leaves the kept one
-    /// alone.
+    /// read and the window closes. It is a full Chrome profile: M1's cookies,
+    /// browsing history with full URLs and the HTTP cache stay, after a failed
+    /// sign-in too, until `m1f auth logout` removes it. The session's tokens do
+    /// not: site storage goes before Chrome starts and again once it stops.
+    /// --fresh-profile signs in through a scratch profile instead, removed when
+    /// the window closes, and leaves the kept one alone.
     ///
     /// Without Chrome, copy the session out of any browser and pipe it in
     /// (--browser-session):

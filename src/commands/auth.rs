@@ -19,19 +19,18 @@
 //! The window runs in a Chrome profile `m1f` keeps between sign-ins, so M1's
 //! own sign-in remembers this device and a later `--browser` often needs no
 //! input. It is a full Chrome profile: M1's cookies, browsing history with full
-//! URLs, query strings included, the HTTP cache and site storage. Chrome's
-//! cookie encryption does not cover the last three, so the directory's `0700`
-//! mode is their only protection, and ordinary backups usually include it. On
+//! URLs, query strings included, and the HTTP cache. Chrome's cookie encryption
+//! does not cover the last two, so the directory's `0700` mode is their only
+//! protection, and ordinary backups usually include it. On
 //! Linux with no desktop keyring Chrome encrypts the cookies with a fixed, publicly
 //! known key, so there the session cookie has only `0700` too. The profile stays
 //! on disk until `auth logout` removes it ([`run_logout`]), after a failed
 //! sign-in too ([`through_the_window`]).
 //!
-//! The session's tokens stay in the profile too, in `localStorage`, which Chrome
-//! does not encrypt: the capture only reads ([`crate::auth0::CAPTURE_EXPRESSION`]).
-//! So the next window opens on them, and the tab closes only on a session M1
-//! accepts ([`confirm_candidate`]): what a retired refresh token can do from there
-//! is in docs/api.md, "The kept profile".
+//! The session's tokens do not stay. The page keeps them in `localStorage`, so
+//! [`browser_launch`] turns on `clear_site_storage`. The capture only reads
+//! ([`crate::auth0::CAPTURE_EXPRESSION`]), and the tab closes only on a session M1
+//! accepts ([`confirm_candidate`]). docs/api.md, "The kept profile", has the detail.
 //!
 //! **The password login** (the rest of this module's history, below) is kept
 //! for the day the edge lets it through again, and names the 403 trap when it
@@ -74,14 +73,8 @@ use crate::{auth0, graphql};
 /// takes no other source and none of the password login's flags; clap refuses
 /// those combinations (exit 2) before anything else runs. With
 /// `--browser-session` it means the same as alone.
-///
-/// `--fresh-profile` needs the same list of its own. Its `requires = "browser"`
-/// does not hold once one of these is present: clap counts a required argument
-/// as satisfied when it conflicts with an argument given, so `--stdin
-/// --fresh-profile` would parse and run the password login.
 #[derive(clap::Args, Debug)]
 #[command(mut_arg("browser", |a| a.conflicts_with_all(["stdin", "from_env", "username", "code"])))]
-#[command(mut_arg("fresh_profile", |a| a.conflicts_with_all(["stdin", "from_env", "username", "code"])))]
 pub struct LoginCmdArgs {
     #[command(flatten)]
     pub base: LoginArgs,
@@ -245,8 +238,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
     let mut bundle = auth0::parse_captured(raw.expose())?;
     refuse_overwrite(ctx, args)?;
     // Only a copied session is renewed here. One from the window was confirmed
-    // unexpired a moment ago, and its refresh token is never presented: it may
-    // be a retired one (see `confirm_candidate`).
+    // unexpired a moment ago.
     if !args.base.no_verify && expiry_passed(&bundle) {
         let (Some(grant), Some(refresh)) = (bundle.auth0.clone(), bundle.refresh_token.clone())
         else {
@@ -284,8 +276,8 @@ fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result
         // copied from.
         let close = if args.browser.browser {
             if keeps_profile(scratch_profile(ctx.creds, args)) {
-                " The browser profile, with a copy of this session's tokens in it, stays on \
-                 disk for the next sign-in; `m1f auth logout` removes it."
+                " The browser profile, with M1's cookies in it, stays on disk for the next \
+                 sign-in; `m1f auth logout` removes it."
             } else {
                 ""
             }
@@ -330,28 +322,13 @@ fn refuse_overwrite(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
 /// closes the moment the session is read, then Chrome quits. Its profile stays
 /// for the next sign-in, unless a scratch one was asked for
 /// ([`scratch_profile`]).
-///
-/// `--no-verify` is refused in a kept profile: the hook's read is the only thing
-/// that tells a session retired since an earlier sign-in from a live one.
 fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
     let scratch = scratch_profile(ctx.creds, args);
-    if args.base.no_verify && keeps_profile(scratch) {
-        return Err(CliError::Usage(format!(
-            "--no-verify needs --fresh-profile with --browser: the kept profile can still hold \
-             an earlier session, and only M1's answer tells a retired one from a live one. Run \
-             `{} --no-verify --fresh-profile`, or drop --no-verify",
-            auth0::LOGIN
-        )));
-    }
     // The keychain check comes before the window: a sign-in the owner has
     // finished is not thrown away for want of --overwrite.
     refuse_overwrite(ctx, args)?;
     ctx.before_signin()?;
-    let launch = Launch::new(crate::BIN)
-        .url(crate::client::WEB_ORIGIN)
-        .fresh_profile(scratch)
-        .quiet(ctx.common.quiet)
-        .login_hint(args.retry_hint());
+    let launch = browser_launch(scratch, ctx.common.quiet, args.retry_hint());
     let endpoint = ctx.cfg.base_url();
     let verbose = ctx.common.verbose;
     let no_verify = args.base.no_verify;
@@ -370,6 +347,19 @@ fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
         || pk_cli_browser::capture(launch, &capture, DEFAULT_TIMEOUT),
         |bundle| store_session(ctx, args, &bundle),
     )
+}
+
+/// The window's Chrome. The page keeps the session's tokens in `localStorage`, and
+/// a refresh token left on disk could be presented by a later window after `m1f`
+/// has retired it, which Auth0 answers by revoking the whole family. So the kept
+/// profile keeps its cookies and never its site storage.
+fn browser_launch(scratch: bool, quiet: bool, hint: String) -> Launch {
+    Launch::new(crate::BIN)
+        .url(crate::client::WEB_ORIGIN)
+        .clear_site_storage(true)
+        .fresh_profile(scratch)
+        .quiet(quiet)
+        .login_hint(hint)
 }
 
 /// A browser sign-in from the window on, with every way it can fail in one
@@ -457,18 +447,17 @@ fn reworded(error: CliError, say: impl FnOnce(String) -> String) -> CliError {
 
 /// Whether the session in the window is one to take, which closes the tab.
 ///
-/// The kept profile still holds the last sign-in's session as the page opens. It
-/// may be expired or already retired. Taking it would close the tab before M1's
-/// page could ask the owner to sign in. So a session that is expired or that M1
-/// refuses keeps the tab open.
+/// Site storage goes before Chrome starts ([`browser_launch`]), so what the page
+/// holds was written in this window. Taking a session that is expired or that M1
+/// refuses would still close the tab before M1's page could ask the owner to sign
+/// in, so either keeps the tab open.
 ///
-/// An expired session is never renewed here: its refresh token may be one
-/// `m1f` has already rotated, and Auth0 answers that reuse by revoking the
-/// whole family. An unexpired one M1 accepts has not been rotated, because
-/// `m1f` renews only after M1 refuses the access token. A token M1 refused is
-/// remembered and not sent again, so a tab sitting on a dead session costs one
-/// read rather than one per poll. A read that cannot decide ends the wait and
-/// takes nothing: a throttle, M1 down, or an answer with no verdict in it.
+/// A session is never renewed here: the page that holds it can renew it too, and
+/// Auth0 answers the second use of a refresh token by revoking the whole family.
+/// A token M1 refused is remembered and not sent again, so a tab sitting on a dead
+/// session costs one read rather than one per poll. A read that cannot decide ends
+/// the wait and takes nothing: a throttle, M1 down, or an answer with no verdict in
+/// it.
 fn confirm_candidate(
     candidate: &Captured,
     refused: &Mutex<Option<Secret>>,
@@ -597,9 +586,37 @@ pub fn status(ctx: &Ctx) -> Result<(), CliError> {
             "a login is awaiting a verification code — finish with `m1f auth login --code <CODE>`"
         );
     }
-    let status = status_dto(ctx, bundle.as_ref(), ctx.cfg.username.as_deref());
+    let mut status = status_dto(ctx, bundle.as_ref(), ctx.cfg.username.as_deref());
+    status.browser_profile = browser_profile_status(ctx.creds, ctx.common.quiet, || {
+        pk_cli_browser::profile_exists(crate::BIN)
+    });
     status.emit(ctx.common.json);
     Ok(())
+}
+
+/// `auth status`'s browser field: whether a `--browser` sign-in keeps a profile
+/// here. A kept profile, not a signed-in one. A keychain pointed away from the real
+/// session signs in from a scratch profile, so it reports none and reads nothing of
+/// the real one's. `auth status` works whatever state the CLI is in, so a profile
+/// that needs repair is a warning and leaves the field out. The check is passed in:
+/// the binary binds `profile_exists`, the tests `profile_exists_in` under a temp dir.
+fn browser_profile_status(
+    creds: &CredentialStore,
+    quiet: bool,
+    exists: impl FnOnce() -> Result<bool, BrowserError>,
+) -> Option<bool> {
+    if keychain_redirected(creds) {
+        return None;
+    }
+    match exists() {
+        Ok(kept) => Some(kept),
+        Err(e) => {
+            if !quiet {
+                eprintln!("warning: {e}");
+            }
+            None
+        }
+    }
 }
 
 pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), CliError> {
@@ -629,8 +646,8 @@ pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), C
 /// The steps are passed in so a test can fail any of them and reach neither the
 /// keychain nor the owner's real profile: the binary binds the last to
 /// `forget_profile(BIN)`, the tests to `forget_profile_in` under a temp dir. That
-/// profile holds M1's cookies, a copy of the session's tokens, browsing history and
-/// cache, so a logout removes it and the next sign-in starts signed out.
+/// profile holds M1's cookies, browsing history and cache, so a logout removes it
+/// and the next sign-in starts signed out.
 ///
 /// With `M1F_KEYCHAIN_SERVICE` set, this logout clears some other service's
 /// tokens, and the real session is still there. The profile and the config have no
@@ -1168,10 +1185,9 @@ mod tests {
         crate::auth0::tests::jwt(claims)
     }
 
-    /// What the kept profile changes: its last session is there as the page
-    /// opens. An expired one keeps the tab open with no read and no renewal.
+    /// An expired session keeps the tab open, with no read and no renewal.
     #[test]
-    fn an_expired_session_in_the_kept_profile_keeps_the_tab_open() {
+    fn an_expired_session_keeps_the_tab_open() {
         let expired = crate::auth0::tests::jwt(crate::auth0::tests::m1_claims(1));
         let refused = Mutex::new(None);
         let answer = confirm_candidate(&held(&expired), &refused, |_| {
@@ -1280,6 +1296,100 @@ mod tests {
         );
     }
 
+    /// A script that stands in for Chrome: it writes to the profile's site storage
+    /// as a page would, reports a debug port and sleeps until stopped. It is what a
+    /// launch runs in these tests, so the real lock and removals are exercised and no
+    /// Chrome starts.
+    #[cfg(unix)]
+    fn stand_in_chrome(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("stand-in-chrome");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --user-data-dir=*) \
+             d=\"${a#--user-data-dir=}\";; esac; done\n\
+             mkdir -p \"$d/Default/Local Storage\"\n\
+             : > \"$d/Default/Local Storage/from-this-run\"\n\
+             printf '1\\n/devtools/browser/dummy\\n' > \"$d/DevToolsActivePort\"\n\
+             exec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// What `m1f` builds for a sign-in, running the stand-in under `root`.
+    #[cfg(unix)]
+    fn launch_under(root: &std::path::Path, chrome: &std::path::Path) -> Launch {
+        browser_launch(false, true, "dummy-hint".to_string())
+            .chrome(chrome)
+            .ctrl_c(false)
+            .profile_root(root)
+    }
+
+    /// What an earlier run left in site storage is gone before Chrome starts, what
+    /// this run wrote is gone once it has stopped, and the cookies stay.
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_profile_keeps_its_cookies_and_never_its_site_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let chrome = stand_in_chrome(tools.path());
+        drop(launch_under(root.path(), &chrome).spawn().unwrap());
+        let default = root
+            .path()
+            .join(format!("piekstra.{}", crate::BIN))
+            .join("browser-profile/Default");
+        let left_behind = default.join("Local Storage/leveldb");
+        std::fs::create_dir_all(&left_behind).unwrap();
+        std::fs::write(left_behind.join("000003.log"), "dummy").unwrap();
+        std::fs::write(default.join("Cookies"), "dummy").unwrap();
+
+        let running = launch_under(root.path(), &chrome).spawn().unwrap();
+        assert!(!left_behind.exists(), "cleared before Chrome starts");
+        assert!(default.join("Local Storage/from-this-run").exists());
+        drop(running);
+        assert!(!default.join("Local Storage").exists(), "and once it stops");
+        assert!(default.join("Cookies").exists());
+    }
+
+    /// `auth status` says whether a profile is kept, and a path that needs repair
+    /// is a warning that leaves the field out, never a failed status.
+    #[cfg(unix)]
+    #[test]
+    fn auth_status_reports_the_kept_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let exists = || pk_cli_browser::profile_exists_in(root.path(), crate::BIN);
+        let field = || browser_profile_status(&real_store(), true, exists);
+        assert_eq!(field(), Some(false));
+
+        let parent = root.path().join(format!("piekstra.{}", crate::BIN));
+        let profile = parent.join("browser-profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        assert_eq!(field(), Some(true));
+        let mut status = AuthStatus::new(true, false, AuthMethod::BrowserSession);
+        status.browser_profile = field();
+        assert_eq!(status.to_json()["browser_profile"], true);
+
+        std::fs::remove_dir(&profile).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &profile).unwrap();
+        assert_eq!(field(), None);
+        status.browser_profile = field();
+        assert!(status.to_json().get("browser_profile").is_none());
+    }
+
+    /// A keychain pointed away from the real session has no kept profile of its
+    /// own, and does not read the real one's.
+    #[test]
+    fn a_redirected_keychain_reports_no_kept_profile() {
+        let elsewhere = CredentialStore::new("m1f-dummy-service");
+        let field = browser_profile_status(&elsewhere, true, || {
+            panic!("a redirected keychain must not look at the real profile")
+        });
+        assert_eq!(field, None);
+    }
+
     /// A profile a sign-in is using is refused, exit 1, and left alone, and the
     /// error says what is already gone and how to finish. A real sign-in holds it
     /// here, through a stand-in for Chrome that reports a debug port and sleeps,
@@ -1287,28 +1397,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn logout_refuses_a_kept_profile_a_sign_in_is_using() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let tools = tempfile::tempdir().unwrap();
-        let stand_in = tools.path().join("stand-in-chrome");
-        std::fs::write(
-            &stand_in,
-            "#!/bin/sh
-for a in \"$@\"; do case \"$a\" in --user-data-dir=*)              d=\"${a#--user-data-dir=}\";; esac; done
-             printf '1\\n/devtools/browser/dummy\\n' > \"$d/DevToolsActivePort\"
-exec sleep 60
-",
-        )
-        .unwrap();
-        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let signing_in = Launch::new(crate::BIN)
-            .url(crate::client::WEB_ORIGIN)
-            .chrome(&stand_in)
-            .ctrl_c(false)
-            .quiet(true)
-            .profile_root(root.path())
-            .spawn()
-            .unwrap();
+        let stand_in = stand_in_chrome(tools.path());
+        let signing_in = launch_under(root.path(), &stand_in).spawn().unwrap();
 
         let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
         let err = logout_with(false, forget).unwrap_err();

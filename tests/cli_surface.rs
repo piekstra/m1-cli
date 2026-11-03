@@ -393,27 +393,6 @@ fn a_broken_config_stops_only_the_commands_that_read_it() {
         .stderr(predicate::str::contains("parsing"));
 }
 
-/// `--no-verify` cannot vouch for what a kept profile may still hold: exit 2 before
-/// the keychain or Chrome. HOME and Chrome point at nothing in case that changes.
-#[cfg(unix)]
-#[test]
-fn no_verify_needs_a_scratch_profile_with_the_browser_flag() {
-    let home = tempfile::tempdir().unwrap();
-    let config = home.path().join("config.toml");
-    m1f()
-        .env("HOME", home.path())
-        .env("XDG_DATA_HOME", home.path())
-        .env("M1F_CHROME", "/nonexistent/m1f-test-chrome")
-        .arg("--config")
-        .arg(&config)
-        .args(["auth", "login", "--browser", "--no-verify"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "--no-verify needs --fresh-profile",
-        ));
-}
-
 /// `--fresh-profile` picks the profile of a browser sign-in, so it means nothing
 /// without `--browser`: exit 2 at parse time, before the keychain, Chrome or M1.
 /// Each source here reaches the keychain if it ever parses.

@@ -65,21 +65,24 @@ on macOS and under `$XDG_DATA_HOME` (or `~/.local/share`) on Linux, owner-only
 --browser --fresh-profile` signs in once through a scratch profile, deleted
 afterwards, and leaves the kept one alone.
 
-The trade is more than cookies. It is a full Chrome profile, so it also keeps a
-copy of the session's access and refresh tokens, browsing history with full URLs,
-query strings included, the HTTP cache and site storage, for whatever you open in
-that window. Chrome's cookie encryption does not cover those: the directory's `0700`
-mode is their only protection, and ordinary backups usually include the directory
-([`SECURITY.md`](SECURITY.md)). On
-Linux with no desktop keyring Chrome encrypts the cookies with a fixed, publicly
-known key, so there the session cookie has only `0700` too.
+The trade is more than cookies. It is a full Chrome profile, so it also keeps
+browsing history with full URLs, query strings included, and the HTTP cache, for
+whatever you open in that window. Chrome's cookie encryption does not cover those:
+the directory's `0700` mode is their only protection, and ordinary backups usually
+include the directory ([`SECURITY.md`](SECURITY.md)). On Linux with no desktop
+keyring Chrome encrypts the cookies with a fixed, publicly known key, so there the
+session cookie has only `0700` too.
+
+It does not keep the session's tokens. M1's page holds them in site storage, which
+`m1f` removes before Chrome starts and again once Chrome has stopped. A crash or a
+second Ctrl-C skips the second removal; the next launch or `m1f auth logout` covers
+it.
 
 The profile stays after a failed sign-in too, and every failure once the window
 has opened says so: a timeout, a closed window, Ctrl-C, M1 throttled or down during
 the check, a keychain write that fails. Those can leave a live session in it.
-`--browser --no-verify` needs `--fresh-profile`, since only M1's answer tells a
-session left in a kept profile from a live one. `m1f auth status` reads only the
-keychain and config, so it does not show the profile. `m1f auth logout` removes it
+`m1f auth status` says whether a profile is kept (`browser_profile` with `--json`),
+not whether anything is signed in there. `m1f auth logout` removes it
 and clears the stored session with it. It attempts every step even after one fails,
 then says what is cleared and what remains, and exits with the first failure's code.
 While a sign-in or a Chrome window is using the profile, it clears the session,
