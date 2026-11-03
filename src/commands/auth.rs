@@ -46,7 +46,7 @@ use pk_cli_core::{output, CliError};
 use pk_cli_secrets::Secret;
 use serde_json::{json, Value};
 
-use super::{emit, Ctx, TOKEN_ACCOUNT};
+use super::{emit, Ctx};
 use crate::client::{M1Client, PendingChallenge, TokenBundle};
 use crate::config::Config;
 use crate::{auth0, graphql};
@@ -109,6 +109,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
     }
 
     let username = resolve_username(ctx, args)?;
+    ctx.before_signin()?;
     let prompt = if args.base.non_interactive {
         None
     } else if args.code.is_some() {
@@ -181,7 +182,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
                 .into(),
         )
     })?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     let status = status_dto(ctx, Some(&bundle), Some(&username));
     status.emit(ctx.common.json);
@@ -203,6 +204,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
         // The keychain check comes before the window: a sign-in the owner
         // has finished is not thrown away for want of --overwrite.
         refuse_overwrite(ctx, args)?;
+        ctx.before_signin()?;
         let captured = capture_from_browser(ctx, args.retry_hint())?;
         auth0::parse_browser_capture(captured.expose())?
     } else {
@@ -215,6 +217,8 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
                 auth0::STDIN_LOGIN
             )));
         }
+        // Before the read: a session piped in once cannot be read again.
+        ctx.lock_usable()?;
         // The pasted session is input: read and check it before the keychain.
         let raw = args.base.source.read(None)?;
         let bundle = auth0::parse_captured(raw.expose())?;
@@ -235,7 +239,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
         }
         verify(ctx, &bundle)?;
     }
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     if !ctx.common.quiet {
         let renewal = if bundle.refresh_token.is_some() {
@@ -385,7 +389,7 @@ pub fn status(ctx: &Ctx) -> Result<(), CliError> {
 }
 
 pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), CliError> {
-    ctx.creds.delete(TOKEN_ACCOUNT)?;
+    ctx.forget_tokens()?;
     ctx.clear_pending()?;
     if args.forget {
         store.clear()?;
@@ -412,9 +416,10 @@ pub fn set_credential(ctx: &Ctx, args: &SetCredentialArgs) -> Result<(), CliErro
             "a session is already stored; pass --overwrite to replace it".into(),
         ));
     }
+    ctx.lock_usable()?;
     let secret = args.source.read(None)?;
     let bundle = parse_credential(secret.expose())?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     if !ctx.common.quiet {
         eprintln!("session stored in the OS keychain");
     }

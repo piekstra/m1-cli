@@ -58,6 +58,7 @@ fn stderr_lines(stderr: ChildStderr) -> Receiver<String> {
 struct Server {
     child: Child,
     port: u16,
+    start_line: String,
 }
 
 impl Server {
@@ -84,7 +85,13 @@ impl Server {
             let mut seen = String::new();
             loop {
                 match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                    Ok(line) if line.contains(&ready) => return Self { child, port },
+                    Ok(line) if line.contains(&ready) => {
+                        return Self {
+                            child,
+                            port,
+                            start_line: line,
+                        }
+                    }
                     Ok(line) => {
                         seen.push_str(&line);
                         seen.push('\n');
@@ -141,6 +148,13 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn the_start_line_names_the_version() {
+    let s = Server::start();
+    let expected = format!("m1f {} mcp: serving", env!("CARGO_PKG_VERSION"));
+    assert!(s.start_line.contains(&expected), "{}", s.start_line);
 }
 
 #[test]

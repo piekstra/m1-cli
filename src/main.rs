@@ -327,7 +327,12 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             target: env!("BUILD_TARGET").into(),
             current: env!("CARGO_PKG_VERSION").into(),
         }
-        .run(args, cli.common.json, cli.common.quiet),
+        .run_noting(
+            args,
+            cli.common.json,
+            cli.common.quiet,
+            &pk_cli_mcp::restart_note(BIN),
+        ),
         Command::Mcp(_) => unreachable!("served before the context is built"),
         Command::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), BIN, &mut std::io::stdout());

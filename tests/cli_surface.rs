@@ -11,10 +11,15 @@ use predicates::prelude::*;
 
 fn m1f() -> Command {
     let mut c = Command::cargo_bin("m1f").expect("binary builds");
-    // Don't let a developer's real environment leak into a test run.
+    // Don't let a developer's real environment leak into a test run, and no test
+    // touches the real server's token-refresh lock.
+    let home = std::env::temp_dir().join(format!("m1f-test-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("temp dir");
     c.env_remove("M1F_ACCOUNT")
         .env_remove("M1F_BASE_URL")
-        .env_remove("NO_COLOR");
+        .env_remove("NO_COLOR")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home);
     c
 }
 
@@ -411,6 +416,25 @@ fn a_mis_copied_browser_session_fails_before_the_keychain() {
             .assert()
             .code(2);
     }
+}
+
+/// Bad input fails at once even while another process holds the lock the write
+/// would need: waiting would exit 5 after 75 s and never mention the input.
+#[test]
+fn a_mis_copied_browser_session_does_not_wait_on_a_busy_lock() {
+    let home = tempfile::tempdir().unwrap();
+    pk_cli_auth::refresh_lock::RefreshLock::at(home.path().join(".config/m1f/token-refresh.lock"))
+        .hold(|| {
+            m1f()
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .args(["auth", "login", "--browser-session", "--stdin"])
+                .write_stdin("{not json")
+                .assert()
+                .code(2);
+            Ok(())
+        })
+        .unwrap();
 }
 
 /// The browser session carries no username and no emailed code: those flags
