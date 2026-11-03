@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.12.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.15.1**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
