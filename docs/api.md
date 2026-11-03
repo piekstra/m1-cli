@@ -244,9 +244,9 @@ dropped connection, an empty or unparseable body, an answer with no verdict in i
 an HTML page on any status but a 401 ends the wait at once with the session taken.
 `m1f` stores it, exits 0, and warns on stderr, under `-q` too. The warning names the
 cause (a bot check names itself), says the session is unverified, and says that if
-reads keep failing, `m1f auth login --browser --overwrite` is the way out. `--json` adds
-`verified: false` to the login result, which is absent on a verified login. The page held
-the only local copy and site storage goes when Chrome stops, so discarding the session
+reads keep failing, `m1f auth login --browser --overwrite` is the way out. Under `--json`
+the login result says `verified: false`. The page held the only local copy and site
+storage goes when Chrome stops, so discarding the session
 would cost a new sign-in. Site storage also went before Chrome started, so a token in
 the page can only be this sign-in's: a bad one costs one more sign-in, the same as
 discarding it, and a good one costs none. An outage can clear by the next read; an HTML
@@ -260,6 +260,13 @@ as no verdict rests on Trap 3 and Trap 7, not on a capture of this read.
 An ordinary read still takes an HTML page as exit 3 (Trap 3), and a piped session stores
 nothing on a read that did not prove it. `--browser --no-verify` skips this read; the
 expiry check still runs, and replacing a stored session still needs `--overwrite`.
+
+A login result under `--json` is `auth-status/v1` with `verified`, always a boolean:
+`true` when a read accepted the session and `false` otherwise, so `jq '.verified == true'`
+is right on every route and a direct JSON caller does not read an untested session as
+proven. It is `false` for `--browser` on a read that could not decide, `--no-verify` on
+`--browser` or `--browser-session`, `auth set-credential`, and the password login, where no
+read follows M1's `Authenticate` answer. `auth status` does not carry it.
 
 A capture gets that one read. Once the hook has said ready, Chrome has
 stopped and site storage is gone, so a 429, a 5xx or a dropped connection on another

@@ -206,7 +206,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
     ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     let status = status_dto(ctx, Some(&bundle), Some(&username));
-    status.emit(ctx.common.json);
+    emit_login_result(ctx, &status, unread_result(&status));
     Ok(())
 }
 
@@ -290,23 +290,40 @@ fn store_session(
         eprintln!("{note}");
     }
     let status = status_dto(ctx, Some(bundle), ctx.cfg.username.as_deref());
-    if ctx.common.json {
-        output::json(&login_result(&status, unverified.is_some()));
-    } else {
-        status.emit(false);
-    }
+    let verified = !stored_unread(args.base.no_verify, unverified);
+    emit_login_result(ctx, &status, login_result(&status, verified));
     Ok(())
 }
 
-/// The login result under `--json`: `auth-status/v1`, with `verified: false` on a
-/// session its one read could not decide on. Absent on a verified login, so it is
-/// additive.
-fn login_result(status: &AuthStatus, unverified: bool) -> Value {
-    let mut result = status.to_json();
-    if unverified {
-        result["verified"] = json!(false);
+fn emit_login_result(ctx: &Ctx, status: &AuthStatus, result: Value) {
+    if ctx.common.json {
+        output::json(&result);
+    } else {
+        status.emit(false);
     }
+}
+
+/// Whether a session from `auth login --browser` or `--browser-session` went into the
+/// keychain with no read accepting it: `--no-verify` skipped the read, or it could not
+/// decide. The text and `--json` must agree, so a direct JSON caller does not read that
+/// session as proven.
+fn stored_unread(no_verify: bool, unverified: Option<&str>) -> bool {
+    no_verify || unverified.is_some()
+}
+
+/// The login result under `--json`: `auth-status/v1` with `verified`, always a boolean,
+/// `true` when a read accepted the session and `false` otherwise. A sometimes-absent
+/// field would make `jq '.verified == true'` wrong on the common case.
+fn login_result(status: &AuthStatus, verified: bool) -> Value {
+    let mut result = status.to_json();
+    result["verified"] = json!(verified);
     result
+}
+
+/// The login result of a route that makes no read: the password login, where none
+/// follows M1's `Authenticate` answer, and `auth set-credential`.
+fn unread_result(status: &AuthStatus) -> Value {
+    login_result(status, false)
 }
 
 /// What a stored session says on stderr. The warning comes under `-q` too: nothing
@@ -322,7 +339,7 @@ fn stored_notes(
         notes.push(format!("warning: {}", unverified_warning(why)));
     }
     if !quiet {
-        notes.push(stored(if no_verify || unverified.is_some() {
+        notes.push(stored(if stored_unread(no_verify, unverified) {
             "stored (unverified)"
         } else {
             "verified and stored"
@@ -963,7 +980,11 @@ pub fn set_credential(ctx: &Ctx, args: &SetCredentialArgs) -> Result<(), CliErro
     let bundle = parse_credential(secret.expose())?;
     ctx.store_login(&bundle)?;
     if !ctx.common.quiet {
-        eprintln!("session stored in the OS keychain");
+        eprintln!("session stored (unverified) in the OS keychain");
+    }
+    if ctx.common.json {
+        let status = status_dto(ctx, Some(&bundle), ctx.cfg.username.as_deref());
+        output::json(&unread_result(&status));
     }
     Ok(())
 }
@@ -1464,20 +1485,67 @@ mod tests {
         );
     }
 
-    /// `verified: false` is additive: on a verified login the field is absent, and
-    /// nothing else in the result differs.
+    /// The login result always carries `verified` as a boolean, so `jq '.verified ==
+    /// true'` is right on every route. Nothing else in the result differs.
     #[test]
-    fn the_result_says_verified_false_only_when_it_is_unverified() {
+    fn the_result_always_says_verified() {
         let status = AuthStatus::new(true, true, AuthMethod::BrowserSession);
-        let proved = login_result(&status, false);
-        assert!(proved.get("verified").is_none(), "{proved}");
-        assert_eq!(proved, status.to_json());
+        let mut proved = login_result(&status, true);
+        assert_eq!(proved["verified"], json!(true), "{proved}");
         assert_eq!(proved["schema"], "auth-status/v1");
-
-        let mut unproved = login_result(&status, true);
+        let mut unproved = login_result(&status, false);
         assert_eq!(unproved["verified"], json!(false), "{unproved}");
+
+        proved.as_object_mut().unwrap().remove("verified");
         unproved.as_object_mut().unwrap().remove("verified");
-        assert_eq!(unproved, proved);
+        assert_eq!(proved, status.to_json());
+        assert_eq!(unproved, status.to_json());
+    }
+
+    #[test]
+    fn the_routes_with_no_read_say_verified_false() {
+        let status = AuthStatus::new(true, true, AuthMethod::Password);
+        let result = unread_result(&status);
+        assert_eq!(result["verified"], json!(false), "{result}");
+        assert_eq!(result["schema"], "auth-status/v1");
+    }
+
+    /// Every browser-session route says whether a read accepted the session, and the
+    /// text agrees with it.
+    #[test]
+    fn every_route_says_whether_a_read_accepted_the_session() {
+        let status = AuthStatus::new(true, true, AuthMethod::BrowserSession);
+        for (flags, why, unread) in [
+            (&["--browser"][..], None, false),
+            (&["--browser"], Some("dummy cause"), true),
+            (&["--browser", "--no-verify"], None, true),
+            (&["--browser-session", "--stdin"], None, false),
+            (&["--browser-session", "--stdin", "--no-verify"], None, true),
+            (
+                &[
+                    "--browser-session",
+                    "--from-env",
+                    "DUMMY_VAR",
+                    "--no-verify",
+                ],
+                None,
+                true,
+            ),
+        ] {
+            let no_verify = login_args(flags).base.no_verify;
+            let result = login_result(&status, !stored_unread(no_verify, why));
+            assert_eq!(
+                result["verified"],
+                json!(!unread),
+                "{flags:?} {why:?}: {result}"
+            );
+            let line = stored_notes(false, no_verify, why, |how| how.to_string());
+            assert_eq!(
+                line.last().unwrap() == "stored (unverified)",
+                unread,
+                "{flags:?} {why:?}: the text and the JSON must agree"
+            );
+        }
     }
 
     /// With a session stored and no `--overwrite`, the sign-in stops before Chrome.

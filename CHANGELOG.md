@@ -43,9 +43,14 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
   answered.
 - If that read cannot decide (a Cloudflare page, a throttle, an outage, a dropped
   connection, an answer with no verdict), the sign-in is kept: the session is stored,
-  the exit is 0, `--json` adds `verified: false`, and a warning says why, even under
+  the exit is 0, `--json` says `verified: false`, and a warning says why, even under
   `-q`, that it is unverified, and that
   if reads keep failing, `m1f auth login --browser --overwrite` is the way out.
+- A login result under `--json` now always carries `verified`, a boolean: `true` when a
+  read accepted the session and `false` otherwise. `--no-verify` on `--browser` or
+  `--browser-session` and the password login say `false`. So does `auth set-credential`,
+  which printed no result under `--json` before and now prints this one; its stderr line
+  now says the session is stored unverified.
 - Before going back to an older release, run `m1f auth logout`. An older release does
   not know the kept profile and its logout leaves it behind; otherwise delete
   `~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under

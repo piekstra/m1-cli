@@ -94,7 +94,9 @@ render partial data as if it were complete.
   `Auth` there: the hook reads through `M1Client::execute_in_window`, whose
   `html_in_window` is not `Auth`. Anything else is `Ready` with its cause in
   `WindowMemory::unverified`, `store_session` warns even under `-q` (`stored_notes`),
-  and `--json` adds `verified: false` (`login_result`). The page held the only copy, so
+  and the `--json` result says `verified: false` (`login_result`, always a boolean), as
+  it does for `--no-verify` (`stored_unread`), `auth set-credential` and the password
+  login. The page held the only copy, so
   the session is stored. Ordinary
   reads keep `html_error`, exit 3, and a piped session stores nothing unless its read
   proves it.

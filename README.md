@@ -58,7 +58,7 @@ point `M1F_CHROME` at its binary. To replace a stored session, add `--overwrite`
 stores anything, then renews it on its own. If M1 refuses it, the window stays open
 for a new sign-in. If the read cannot decide (a bot check, M1 throttled or down), `m1f`
 stores the session anyway, since the page held the only copy, exits 0, and warns even
-under `-q` that it is unverified; `--json` adds `verified: false`. If reads then keep
+under `-q` that it is unverified; `--json` says `verified: false`. If reads then keep
 failing, run `m1f auth login --browser
 --overwrite`.
 
