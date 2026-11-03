@@ -227,8 +227,7 @@ no Chrome), and again once Chrome has stopped. A crash or a second Ctrl-C skips 
 second removal, as does a Chrome still running in the profile; the tokens then stay
 on disk, `0700` their only protection, until the next launch or `auth logout`. Each
 window therefore opens with no session in the page, and Auth0's cookie decides
-whether the owner has to sign in. The expression only reads: the evaluation can run
-more than once, so a removal could lose a session the capture never took.
+whether the owner has to sign in. The expression only reads.
 
 **The confirm hook judges what it read.** The tab stays open on an expired session,
 or one M1 refuses, until a new sign-in replaces it. The hook never renews: only a

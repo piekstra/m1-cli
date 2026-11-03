@@ -99,10 +99,9 @@ pub const DASHBOARD_HOST: &str = "dashboard.m1.com";
 /// takes both ([`parse_browser_capture`], [`parse_captured`]). docs/api.md
 /// quotes it verbatim.
 ///
-/// It only reads. The launch clears the profile's site storage
-/// (`commands::auth::browser_launch`), and the evaluation runs at least once, so a
-/// removal from here could lose a session the capture never took. Whether what it reads is worth taking is the confirm hook's call
-/// (`commands::auth::confirm_candidate`).
+/// It only reads: the launch clears the profile's site storage
+/// (`commands::auth::browser_launch`). Whether what it reads is worth taking is the
+/// confirm hook's call (`commands::auth::confirm_candidate`).
 pub const CAPTURE_EXPRESSION: &str = "(() => { const k = Object.keys(localStorage).find(k => \
      k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && \
      localStorage[k]; return v && v.includes('access_token') ? v : null; })()";
@@ -699,8 +698,7 @@ pub(crate) mod tests {
         ] {
             assert!(CAPTURE_EXPRESSION.contains(&needle), "{needle}");
         }
-        // It only reads: the evaluation can run more than once, so a removal could
-        // lose a session the capture never took.
+        // It only reads: the launch clears the profile's site storage.
         for write in ["removeItem", "setItem", ".clear("] {
             assert!(!CAPTURE_EXPRESSION.contains(write), "{write}");
         }

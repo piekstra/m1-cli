@@ -79,9 +79,8 @@ render partial data as if it were complete.
   session's tokens in `localStorage`, and a retired refresh token left there can get
   the whole family revoked. Keep it on. `commands::auth::confirm_candidate` lets the
   tab close only on an unexpired session M1 accepts, and never renews a candidate.
-  `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read. Do not add a removal
-  to the expression: the evaluation can run more than once, and clearing site storage
-  belongs to cli-common.
+  `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read: clearing site storage
+  belongs to `clear_site_storage`.
 - **It is a full Chrome profile** (cookies, history with full URLs, HTTP cache),
   `0700` its only protection beyond Chrome's cookie encryption, which on
   Linux with no desktop keyring uses a fixed, publicly known key. It outlives a

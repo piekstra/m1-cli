@@ -712,17 +712,18 @@ struct LogoutSteps {
 }
 
 impl LogoutSteps {
-    /// The session's removal. `Upstream` is the refresh lock's: the delete has run,
-    /// and what remains is a renewal in flight that can store the session again.
+    /// The session's removal. `Upstream` is the refresh lock's and means the delete
+    /// has run: the session is cleared, and what remains is a renewal in flight that
+    /// can store it again. The lock's message says when to run the logout again.
     fn session(&mut self, result: Result<(), CliError>) {
-        let what = match &result {
-            Err(CliError::Upstream(_)) => {
-                self.finish_when = Some("In a minute, run");
-                "a renewal that can store the session again"
+        match result {
+            Err(e @ CliError::Upstream(_)) => {
+                self.cleared.push("the stored session".to_string());
+                self.finish_when = Some("As that says, run");
+                self.failed("a renewal that can store the session again", e);
             }
-            _ => "the stored session",
-        };
-        self.step(what, result);
+            other => self.step("the stored session", other),
+        }
     }
 
     fn step(&mut self, what: &str, result: Result<(), CliError>) {
@@ -1482,8 +1483,8 @@ mod tests {
         }
     }
 
-    /// After the capture the session is read and stored, and a live session can
-    /// be left in the profile if that fails.
+    /// After the capture the session is read and stored. If that fails, the
+    /// profile's cookies can still hold a live sign-in.
     #[test]
     fn a_failure_after_the_capture_says_the_kept_profile_stays() {
         for (failure, code) in [
@@ -1802,18 +1803,21 @@ mod tests {
             || Err(CliError::Upstream("dummy: lock held".into())),
             || Ok(()),
             || panic!("--forget was not asked for"),
-            || Ok(true),
+            || Ok(false),
         )
         .unwrap_err();
         assert_eq!(err.exit_code(), 5, "{err}");
         let message = err.to_string();
         assert!(
-            message.contains("only a renewal that can store the session again remains"),
+            message.contains(
+                "partly logged out: the stored session is cleared and only a renewal that can \
+                 store the session again remains."
+            ),
             "{message}"
         );
-        assert!(!message.contains("stored session remains"), "{message}");
+        assert!(!message.contains("nothing is cleared"), "{message}");
         assert!(
-            message.contains("In a minute, run `m1f auth logout`"),
+            message.contains("As that says, run `m1f auth logout`"),
             "{message}"
         );
 
