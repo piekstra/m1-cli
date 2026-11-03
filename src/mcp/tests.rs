@@ -661,11 +661,31 @@ fn a_missing_session_asks_for_the_browser_login_in_a_terminal() {
         let text = err(&call(&t, name, json!({}))).to_string();
         assert!(text.starts_with("auth:"), "{name}: {text}");
         assert!(
-            text.contains("Ask the user to run `m1f auth login --browser` in a terminal"),
+            text.contains(
+                "Ask the user to run `m1f auth login --browser --overwrite` in a terminal"
+            ),
             "{name}: {text}"
         );
         assert!(text.contains("never sign in"), "{name}: {text}");
     }
+}
+
+/// A block at the edge is not cleared by signing in, so the fix does not lead with one.
+#[test]
+fn a_block_at_the_edge_does_not_ask_for_a_new_sign_in_first() {
+    let t = tools();
+    const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+    *t.source().fail.lock().unwrap() =
+        Some(crate::client::tests::read_answer(403, PAGE).unwrap_err());
+    let text = err(&call(&t, PORTFOLIO_TOOL, json!({}))).to_string();
+    assert!(text.starts_with("auth:"), "{text}");
+    assert!(
+        text.contains("Wait or try another network, then call the tool again"),
+        "{text}"
+    );
+    assert!(text.contains("Only if it still fails after that"), "{text}");
+    assert!(text.contains("never sign in"), "{text}");
+    assert!(!text.contains("in a terminal, then call"), "{text}");
 }
 
 #[test]

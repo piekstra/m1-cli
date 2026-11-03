@@ -59,8 +59,9 @@ stores anything, then renews it on its own. If M1 refuses it, the window stays o
 for a new sign-in. If the read cannot decide (a bot check, M1 throttled or down), `m1f`
 stores the session anyway, since the page held the only copy, exits 0, and warns even
 under `-q` that it is unverified; `--json` says `verified: false`. If reads then keep
-failing, run `m1f auth login --browser
---overwrite`.
+failing, run `m1f auth login --browser --overwrite`. After a bot check, wait or try
+another network first: a new sign-in may not help, because the block is on the client
+rather than the session.
 
 The kept profile lets M1 remember this device, so a later sign-in often needs no
 password, code or bot check: the window opens, the session is read and the window
@@ -227,8 +228,9 @@ hold it. Install `m1f` and run `m1f auth login --browser` in a terminal
 (see [Getting started](#getting-started)). Both ways of connecting Claude
 below then use that session from the OS keychain (service `piekstra.m1f`),
 and refresh it in place as the commands do. If the session is missing or has
-lapsed, the tools say so and ask you to run `m1f auth login --browser` in a
-terminal; they never sign in by themselves.
+lapsed, the tools say so and ask you to run `m1f auth login --browser --overwrite`
+in a terminal; they never sign in by themselves. After a block at the edge they say to
+wait or try another network first.
 
 **Claude Code.** Add the `m1-cli` plugin from the
 [piekstra plugin marketplace](https://github.com/piekstra/claude-plugins):

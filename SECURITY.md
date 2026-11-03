@@ -64,7 +64,7 @@ Desktop) over stdio, on this machine only; it opens no port unless run
 with `--http` (below). It uses the
 session already in the keychain, exactly as the commands do, refreshing it
 in place, and never signs in: a missing or lapsed session is an error asking
-the user to run `m1f auth login --browser` in a terminal. No tool downloads
+the user to run `m1f auth login --browser --overwrite` in a terminal. No tool downloads
 a document or emits a document's raw id or link. The Claude Desktop
 extension (`.mcpb`) takes no settings and so holds no credential of its
 own; on macOS its bundled binary needs the user's approval, once, to read

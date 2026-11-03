@@ -187,7 +187,7 @@ impl M1Client {
         query: &str,
         variables: Value,
         operation_name: Option<&str>,
-    ) -> Result<Value, CliError> {
+    ) -> Result<Value, WindowReadError> {
         let (status, text) = self.send(query, variables, operation_name)?;
         self.read_window_reply(status, &text)
     }
@@ -245,21 +245,25 @@ impl M1Client {
     }
 
     /// [`read_reply`](Self::read_reply) as a sign-in window's confirm hook takes it. A
-    /// 401 refuses the token whatever its body. An HTML page on any other status is
-    /// no verdict ([`html_in_window`]).
+    /// 401 refuses the token whatever its body. An answer shaped like a block at the
+    /// edge is no verdict ([`edge_in_window`]). `html_error` is never reached from here:
+    /// a 429 or a 5xx is read by its status first, and any other HTML page has gone.
     fn read_window_reply(
         &self,
         status: reqwest::StatusCode,
         text: &str,
-    ) -> Result<Value, CliError> {
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            && serde_json::from_str::<Value>(text).is_err()
-        {
-            return Err(CliError::Auth(format!(
-                "M1 rejected the session (HTTP {status})"
-            )));
+    ) -> Result<Value, WindowReadError> {
+        if serde_json::from_str::<Value>(text).is_err() {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(
+                    CliError::Auth(format!("M1 rejected the session (HTTP {status})")).into(),
+                );
+            }
+            if let Some(why) = edge_in_window(status, text) {
+                return Err(WindowReadError::Edge(why));
+            }
         }
-        self.read_reply(status, text, html_in_window)
+        Ok(self.read_reply(status, text, html_error)?)
     }
 
     /// What an answer says: its data, or the failure it carries.
@@ -490,26 +494,80 @@ fn unavailable(status: reqwest::StatusCode) -> CliError {
     }
 }
 
-/// An HTML page where a read expected GraphQL: a Cloudflare bot check, or a
-/// session the edge refused. Exit 3, pointing at the login that works today.
+/// How [`edge_block_advice`] opens, so the MCP server can tell that this advice is
+/// already in an error and not ask for a sign-in beside it.
+pub const SIGN_IN_MAY_NOT_HELP: &str =
+    "A new sign-in may not help, because a block like this is on the client rather than the \
+     session";
+
+/// What to do about an answer shaped like a block at the edge. Signing in does not clear
+/// a block on this client, and each attempt spends a sign-in and replaces the stored
+/// session, so the sign-in comes last. One text, so a sign-in's warning and a later
+/// read's error send the owner the same way.
+pub fn edge_block_advice() -> String {
+    format!(
+        "{SIGN_IN_MAY_NOT_HELP}: wait or try another network, and only if reads still fail \
+         after that, run `{}`.",
+        crate::auth0::RELOGIN
+    )
+}
+
+/// An HTML page where a read expected GraphQL: a Cloudflare bot check, or a session the
+/// edge refused. Exit 3 either way. A 401 refuses the token, so it names the login that
+/// works today. Any other status may be a block on this client ([`edge_block_advice`]).
 fn html_error(status: reqwest::StatusCode) -> CliError {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return CliError::Auth(format!(
+            "expected a GraphQL response but got HTML (HTTP {status}) — the session is no \
+             longer accepted; sign in again with `{}` (steps in `m1f auth login --help`)",
+            crate::auth0::RELOGIN
+        ));
+    }
     CliError::Auth(format!(
         "expected a GraphQL response but got HTML (HTTP {status}) — a Cloudflare bot check \
-         intervened or the session is no longer accepted; sign in again with `{}` (steps in \
-         `m1f auth login --help`)",
-        crate::auth0::RELOGIN
+         intervened or the session is no longer accepted. {} The steps are in `m1f auth login \
+         --help`.",
+        edge_block_advice()
     ))
 }
 
-/// The confirm hook's reading of an HTML answer: no verdict. Site storage goes before
-/// each window opens, so the token in the page was written by this sign-in moments ago,
-/// and a page from the edge says nothing about it. As `Auth` it would hold a signed-in
-/// tab open until the timeout and mark a live token refused.
-fn html_in_window(status: reqwest::StatusCode) -> CliError {
-    CliError::Upstream(format!(
-        "M1 answered the session check with an HTML page (HTTP {status}), most likely a \
-         Cloudflare bot check and no verdict on the session"
-    ))
+/// A failed read by a sign-in window's confirm hook.
+#[derive(Debug)]
+pub enum WindowReadError {
+    /// An answer shaped like a block at the edge ([`edge_in_window`]).
+    Edge(String),
+    /// Anything else. `Auth` is a definite refusal, and the rest cannot decide.
+    Other(CliError),
+}
+
+impl From<CliError> for WindowReadError {
+    fn from(e: CliError) -> Self {
+        WindowReadError::Other(e)
+    }
+}
+
+/// The confirm hook's reading of an answer with no JSON in it, if it is shaped like a
+/// block at the edge: an HTML page, or a 403 with no JSON. No verdict. Site storage goes
+/// before each window opens, so the token in the page was written by this sign-in
+/// moments ago, and a page from the edge says nothing about it. As `Auth` it would hold
+/// a signed-in tab open until the timeout and mark a live token refused. A throttle or
+/// an outage is read by its status first, whatever its body, and is not this.
+fn edge_in_window(status: reqwest::StatusCode, text: &str) -> Option<String> {
+    if status == 429 || status.is_server_error() {
+        None
+    } else if looks_like_html(text) {
+        Some(format!(
+            "M1 answered the session check with an HTML page (HTTP {status}), most likely a \
+             Cloudflare bot check and no verdict on the session"
+        ))
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        Some(format!(
+            "M1 answered the session check with HTTP {status} and no JSON, most likely a block \
+             at the edge and no verdict on the session"
+        ))
+    } else {
+        None
+    }
 }
 
 /// The password login's reading of an HTML answer — the 403 trap of
@@ -961,7 +1019,7 @@ pub(crate) mod tests {
     }
 
     /// An answer as a sign-in window's confirm hook takes it, with no network.
-    pub(crate) fn window_answer(status: u16, body: &str) -> Result<Value, CliError> {
+    pub(crate) fn window_answer(status: u16, body: &str) -> Result<Value, WindowReadError> {
         M1Client::anonymous("http://127.0.0.1:9", false)
             .unwrap()
             .read_window_reply(reqwest::StatusCode::from_u16(status).unwrap(), body)
@@ -994,6 +1052,31 @@ pub(crate) mod tests {
             let err = read_answer(status, PAGE).unwrap_err();
             assert_eq!(err.exit_code(), 3, "{status}: {err}");
         }
+    }
+
+    /// An ordinary read's HTML error says what a sign-in's warning says, at the same
+    /// exit code. A 401 refuses the token, so it names the login with no wait.
+    #[test]
+    fn an_html_read_puts_the_sign_in_last_unless_it_was_refused() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        for status in [200, 403, 404] {
+            let err = read_answer(status, PAGE).unwrap_err();
+            assert_eq!(err.exit_code(), 3, "{status}: {err}");
+            let text = err.to_string();
+            assert!(text.contains(&edge_block_advice()), "{status}: {text}");
+            assert!(!text.contains("sign in again"), "{status}: {text}");
+            let wait = text.find("wait or try another network").unwrap();
+            let login = text.find("`m1f auth login --browser --overwrite`").unwrap();
+            assert!(wait < login, "{status}: {text}");
+        }
+        let refused = read_answer(401, PAGE).unwrap_err();
+        assert_eq!(refused.exit_code(), 3, "{refused}");
+        let text = refused.to_string();
+        assert!(
+            text.contains("sign in again with `m1f auth login --browser --overwrite`"),
+            "{text}"
+        );
+        assert!(!text.contains(SIGN_IN_MAY_NOT_HELP), "{text}");
     }
 
     #[test]

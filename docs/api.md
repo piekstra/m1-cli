@@ -243,16 +243,25 @@ the cause.
 dropped connection, an empty or unparseable body, an answer with no verdict in it, or
 an HTML page on any status but a 401 ends the wait at once with the session taken.
 `m1f` stores it, exits 0, and warns on stderr, under `-q` too. The warning names the
-cause (a bot check names itself), says the session is unverified, and says that if
-reads keep failing, `m1f auth login --browser --overwrite` is the way out. Under `--json`
-the login result says `verified: false`. The page held the only local copy and site
-storage goes when Chrome stops, so discarding the session
-would cost a new sign-in. Site storage also went before Chrome started, so a token in
-the page can only be this sign-in's: a bad one costs one more sign-in, the same as
-discarding it, and a good one costs none. An outage can clear by the next read; an HTML
-403 or an empty 2xx can repeat on every read, which is why the warning gives the way
-out. `refuse_overwrite` runs before the window, so an unverified session never replaces
-a stored one without `--overwrite`.
+cause (a bot check names itself) and says the session is unverified. Under `--json` the
+login result says `verified: false`. The page held the only local copy and site storage
+goes when Chrome stops, so discarding the session would cost a new sign-in. Site storage
+also went before Chrome started, so a token in the page can only be this sign-in's: a bad
+one costs one more sign-in, the same as discarding it, and a good one costs none.
+`refuse_overwrite` runs before the window, so an unverified session never replaces a
+stored one without `--overwrite`.
+
+What the warning says next depends on the answer:
+
+| Answer | What it says |
+| --- | --- |
+| An HTML page on any status but a 401, or a 403 with no JSON (`client::edge_in_window`) | A new sign-in may not help, because a block like this is on the client rather than the session: wait or try another network, and only if reads still fail after that, run `m1f auth login --browser --overwrite`. |
+| Anything else that cannot decide: a 429, a 5xx, a dropped connection, an empty or unparseable 2xx, no verdict | A later read may settle it; if reads keep failing, run `m1f auth login --browser --overwrite`. |
+
+Signing in does not clear a block on this client, and each attempt spends a sign-in and
+replaces the stored session, exiting 0 each time. So an ordinary read's HTML error
+(`client::html_error`, still exit 3) and the MCP tools' fix say what the first row says.
+An HTML 401 on an ordinary read refuses the token, so it names the login at once.
 
 **UNVERIFIED-LIVE:** a bot check on this read has not been seen. Reading an HTML page
 as no verdict rests on Trap 3 and Trap 7, not on a capture of this read.
@@ -266,7 +275,10 @@ A login result under `--json` is `auth-status/v1` with `verified`, always a bool
 is right on every route and a direct JSON caller does not read an untested session as
 proven. It is `false` for `--browser` on a read that could not decide, `--no-verify` on
 `--browser` or `--browser-session`, `auth set-credential`, and the password login, where no
-read follows M1's `Authenticate` answer. `auth status` does not carry it.
+read follows M1's `Authenticate` answer. `auth status` does not carry it. The family's
+login result is `auth-login/v1`, and a CLI whose login already answers with its own schema
+adds `verified` there, which is what `m1f` does
+([cli-common #53](https://github.com/piekstra/cli-common/pull/53), DESIGN.md §1.4).
 
 A capture gets that one read. Once the hook has said ready, Chrome has
 stopped and site storage is gone, so a 429, a 5xx or a dropped connection on another
@@ -318,11 +330,12 @@ refreshToken } }`. Verified live:
 ## Trap 3: HTML where JSON should be
 
 A Cloudflare challenge returns an HTML interstitial, not GraphQL. `m1f` detects
-a non-JSON body and reports it as an auth failure pointing at `m1f auth login`.
+a non-JSON body and reports it as an auth failure that puts a new sign-in last, since
+signing in does not clear a block on this client (`client::html_error`).
 Not seen live in this session, but the guard stays. A 429 or a 5xx is read by its
 status first, whatever its body, and is exit 5: a throttle or an outage says
 nothing about the session. A browser sign-in's confirm hook takes an HTML page as no
-verdict instead and stores the session unverified (`client::html_in_window`, "An answer
+verdict instead and stores the session unverified (`client::edge_in_window`, "An answer
 that cannot decide keeps the sign-in").
 
 ## Trap 4: M1 puts the error code at the TOP LEVEL, not under `extensions`
@@ -388,10 +401,11 @@ What `m1f` does with it:
   this trap and the browser-session login, and stores nothing
   (`client::legacy_login_blocked`). It does **not** retry: a second password
   submission spends a lockout attempt for the same 403.
-- Every other HTML answer (a read, a legacy refresh) is exit 3 pointing at
-  `m1f auth login --browser --overwrite` (`client::html_error`), except a 429 or a
-  5xx, which is exit 5 (Trap 3), and the read a browser sign-in's confirm hook makes,
-  which stores the session unverified.
+- Every other HTML answer (a read, a legacy refresh) is exit 3 (`client::html_error`),
+  except a 429 or a 5xx, which is exit 5 (Trap 3), and the read a browser sign-in's
+  confirm hook makes, which stores the session unverified. It says a new sign-in may
+  not help, to wait or try another network, and only if reads still fail after that to
+  run `m1f auth login --browser --overwrite`. An HTML 401 names that login at once.
 - `info` reports `auth.method: browser-session` and `m1f auth login --browser`
   as the hint.
 

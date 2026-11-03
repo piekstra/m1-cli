@@ -44,8 +44,15 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
 - If that read cannot decide (a Cloudflare page, a throttle, an outage, a dropped
   connection, an answer with no verdict), the sign-in is kept: the session is stored,
   the exit is 0, `--json` says `verified: false`, and a warning says why, even under
-  `-q`, that it is unverified, and that
-  if reads keep failing, `m1f auth login --browser --overwrite` is the way out.
+  `-q`, that it is unverified, and that if reads keep failing, `m1f auth login --browser
+  --overwrite` is the way out.
+- After a Cloudflare page or a 403 with no JSON, that warning says a new sign-in may not
+  help, because the block is on the client rather than the session: wait or try another
+  network, and only if reads still fail after that, run `m1f auth login --browser
+  --overwrite`. An ordinary read's HTML error says the same, still exit 3, unless the
+  status is a 401, and so does the MCP tools' fix.
+- The MCP tools' sign-in fix names `m1f auth login --browser --overwrite`, because a
+  lapsed session is still stored and the command refuses without the flag.
 - A login result under `--json` now always carries `verified`, a boolean: `true` when a
   read accepted the session and `false` otherwise. `--no-verify` on `--browser` or
   `--browser-session` and the password login say `false`. So does `auth set-credential`,

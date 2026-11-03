@@ -78,7 +78,8 @@ render partial data as if it were complete.
   `commands::auth::browser_launch` turns on `clear_site_storage`: the page keeps the
   session's tokens in `localStorage`, and a retired refresh token left there can get
   the whole family revoked. Keep it on. `commands::auth::confirm_candidate` lets the
-  tab close only on an unexpired session M1 accepts, and never renews a candidate.
+  tab close only on an unexpired session M1 has not definitely refused (an undecided
+  read keeps the sign-in, below), and never renews a candidate.
   `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read: clearing site storage
   belongs to `clear_site_storage`.
 - **It is a full Chrome profile** (cookies, history with full URLs, HTTP cache),
@@ -92,14 +93,17 @@ render partial data as if it were complete.
 - **A read that cannot decide keeps the sign-in.** In `confirm_candidate` only `Auth`
   from `read_in_window` is a refusal (`NotYet`), and only a 401 or M1's own JSON is
   `Auth` there: the hook reads through `M1Client::execute_in_window`, whose
-  `html_in_window` is not `Auth`. Anything else is `Ready` with its cause in
+  `edge_in_window` is not `Auth`. Anything else is `Ready` with its cause in
   `WindowMemory::unverified`, `store_session` warns even under `-q` (`stored_notes`),
   and the `--json` result says `verified: false` (`login_result`, always a boolean), as
   it does for `--no-verify` (`stored_unread`), `auth set-credential` and the password
-  login. The page held the only copy, so
-  the session is stored. Ordinary
-  reads keep `html_error`, exit 3, and a piped session stores nothing unless its read
-  proves it.
+  login. The page held the only copy, so the session is stored. Ordinary reads keep
+  `html_error`, exit 3, and a piped session stores nothing unless its read proves it.
+- **Signing in does not clear a block at the edge.** An HTML page on any status but a
+  401, or a 403 with no JSON, is `WindowReadError::Edge` to the hook. Its warning, an
+  ordinary read's `html_error` and the MCP fix (`AFTER_A_BLOCK`) all put a new sign-in
+  last (`client::edge_block_advice`), or the owner spends sign-ins in a loop that exits
+  0 each time. A 429, a 5xx or a dropped connection keeps "if reads keep failing".
 - **`auth logout` removes the kept profile, and no test may reach the real one.**
   Its removal goes through the `run_logout` seam: the binary binds
   `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir
@@ -170,9 +174,9 @@ login and a logout hold it around their keychain write only, never across the
 sign-in: a login checks it first (`Ctx::before_signin`), stores through
 `Ctx::store_login`, and a logout's delete runs with or without it
 (`Ctx::forget_tokens`). The tools never sign in: an auth error asks the user to run
-`m1f auth login --browser`
-in a terminal (the profile's standard remedy names plain `auth login`, which
-M1 now refuses).
+`m1f auth login --browser --overwrite` in a terminal (the profile's standard remedy
+names plain `auth login`, which M1 now refuses), or to wait first after a block at the
+edge.
 
 - Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
   through a fixture `Source` and cli-common's conformance helper;

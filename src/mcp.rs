@@ -43,8 +43,16 @@ pub const GAINS_TOOL: &str = "m1_realized_gains";
 /// What a sign-in failure asks of the user. M1's password login is closed
 /// (an HTTP 403 since 2026-10-27), so the standard `m1f auth login` remedy
 /// would send them to a dead end.
-const SIGN_IN: &str = "Ask the user to run `m1f auth login --browser` in a terminal, then call \
-                       the tool again. Tools never sign in or create credentials themselves";
+const SIGN_IN: &str = "Ask the user to run `m1f auth login --browser --overwrite` in a terminal, \
+                       then call the tool again. Tools never sign in or create credentials \
+                       themselves";
+
+/// The fix for an answer shaped like a block at the edge, where a new sign-in comes last
+/// ([`crate::client::edge_block_advice`]).
+const AFTER_A_BLOCK: &str = "Wait or try another network, then call the tool again. Only if it \
+                             still fails after that, ask the user to run `m1f auth login \
+                             --browser --overwrite` in a terminal. Tools never sign in or create \
+                             credentials themselves";
 
 /// Where the tools get M1's data: the live GraphQL API, or fixtures.
 #[allow(async_fn_in_trait)] // deliberate: no `Send` bound, as in `Toolset`
@@ -185,6 +193,9 @@ impl<S: Source> M1Tools<S> {
 /// login.
 fn tool_err(e: CliError) -> ToolError {
     match e {
+        CliError::Auth(m) if m.contains(crate::client::SIGN_IN_MAY_NOT_HELP) => {
+            ToolError::auth(m).with_fix(AFTER_A_BLOCK)
+        }
         CliError::Auth(m) => ToolError::auth(m).with_fix(SIGN_IN),
         other => other.into(),
     }
@@ -461,7 +472,8 @@ impl<S: Source> Toolset for M1Tools<S> {
         Server::new("m1f", env!("CARGO_PKG_VERSION"), "M1", "m1").instructions(
             "M1 access here is read-only: no tool can trade, transfer or change anything. M1 \
              sign-in is through a browser: the command to ask for is `m1f auth login \
-             --browser`. Amounts are USD decimal strings; keep every digit when adding them.",
+             --browser`, with `--overwrite` if a session is already stored. Amounts are USD \
+             decimal strings; keep every digit when adding them.",
         )
     }
 

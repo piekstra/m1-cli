@@ -67,7 +67,7 @@ use pk_cli_secrets::{CredentialStore, Secret};
 use serde_json::{json, Value};
 
 use super::{emit, Ctx};
-use crate::client::{M1Client, PendingChallenge, TokenBundle};
+use crate::client::{M1Client, PendingChallenge, TokenBundle, WindowReadError};
 use crate::config::Config;
 use crate::{auth0, graphql};
 
@@ -261,7 +261,7 @@ fn store_session(
     ctx: &Ctx,
     args: &LoginCmdArgs,
     bundle: &TokenBundle,
-    unverified: Option<&str>,
+    unverified: Option<&Undecided>,
 ) -> Result<(), CliError> {
     prove_then_store(args, bundle, |b| verify(ctx, b), |b| ctx.store_login(b))?;
     ctx.clear_pending()?;
@@ -307,7 +307,7 @@ fn emit_login_result(ctx: &Ctx, status: &AuthStatus, result: Value) {
 /// keychain with no read accepting it: `--no-verify` skipped the read, or it could not
 /// decide. The text and `--json` must agree, so a direct JSON caller does not read that
 /// session as proven.
-fn stored_unread(no_verify: bool, unverified: Option<&str>) -> bool {
+fn stored_unread(no_verify: bool, unverified: Option<&Undecided>) -> bool {
     no_verify || unverified.is_some()
 }
 
@@ -331,7 +331,7 @@ fn unread_result(status: &AuthStatus) -> Value {
 fn stored_notes(
     quiet: bool,
     no_verify: bool,
-    unverified: Option<&str>,
+    unverified: Option<&Undecided>,
     stored: impl FnOnce(&str) -> String,
 ) -> Vec<String> {
     let mut notes = Vec::new();
@@ -348,16 +348,22 @@ fn stored_notes(
     notes
 }
 
-/// `auth status` makes no request, so it is not what tests the session. An answer such
-/// as an HTML 403 or an empty 2xx can repeat on every later read, and then only a new
-/// sign-in gets past it, so this names that way out.
-fn unverified_warning(why: &str) -> String {
-    format!(
-        "the sign-in is kept, but its session is stored unverified: {}. A later read, such as \
-         `m1f accounts list`, may settle it; if reads keep failing, run `{}`.",
-        why.trim_end_matches('.'),
-        auth0::RELOGIN
-    )
+/// `auth status` makes no request, so it is not what tests the session. A throttle or an
+/// outage can clear by the next read, and if reads keep failing, a new sign-in is the
+/// next thing to try. A block at the edge can repeat on every read whatever the session,
+/// and a new sign-in does not get past it, so there the sign-in comes last.
+fn unverified_warning(undecided: &Undecided) -> String {
+    let why = undecided.why.trim_end_matches('.');
+    let next = if undecided.edge {
+        crate::client::edge_block_advice()
+    } else {
+        format!(
+            "A later read, such as `m1f accounts list`, may settle it; if reads keep failing, \
+             run `{}`.",
+            auth0::RELOGIN
+        )
+    };
+    format!("the sign-in is kept, but its session is stored unverified: {why}. {next}")
 }
 
 /// A piped session gets its read here. A session from the window has had its read:
@@ -441,7 +447,7 @@ fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
-            store_session(ctx, args, &bundle, unverified.as_deref())
+            store_session(ctx, args, &bundle, unverified.as_ref())
         },
     )
 }
@@ -565,7 +571,7 @@ fn reworded(error: CliError, say: impl FnOnce(String) -> String) -> CliError {
 fn confirm_candidate(
     candidate: &Captured,
     memory: &WindowMemory,
-    prove: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
+    prove: impl FnOnce(&TokenBundle) -> Result<(), WindowReadError>,
 ) -> Confirm {
     let Some(value) = candidate.value() else {
         return Confirm::NotYet("the page held no session".into());
@@ -588,22 +594,28 @@ fn confirm_candidate(
     }
     match prove(&bundle) {
         Ok(()) => Confirm::Ready,
-        Err(CliError::Auth(reason)) => {
+        Err(WindowReadError::Other(CliError::Auth(reason))) => {
             *refused = Some(Refused {
                 token: Secret::new(bundle.access_token.clone()),
                 reason: reason.clone(),
             });
             Confirm::NotYet(reason)
         }
-        Err(inconclusive) => {
+        Err(WindowReadError::Edge(why)) => take_unverified(memory, Undecided { why, edge: true }),
+        Err(WindowReadError::Other(inconclusive)) => {
             let why = match inconclusive {
                 CliError::Upstream(m) | CliError::Other(m) => m,
                 other => other.to_string(),
             };
-            *memory.unverified.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
-            Confirm::Ready
+            take_unverified(memory, Undecided { why, edge: false })
         }
     }
+}
+
+/// End the wait with the session taken, remembering why it is unverified.
+fn take_unverified(memory: &WindowMemory, undecided: Undecided) -> Confirm {
+    *memory.unverified.lock().unwrap_or_else(|e| e.into_inner()) = Some(undecided);
+    Confirm::Ready
 }
 
 /// What the confirm hook remembers across polls and hands on: the token M1 refused,
@@ -611,7 +623,15 @@ fn confirm_candidate(
 #[derive(Default)]
 struct WindowMemory {
     refused: Mutex<Option<Refused>>,
-    unverified: Mutex<Option<String>>,
+    unverified: Mutex<Option<Undecided>>,
+}
+
+/// Why a read could not decide on the session it took.
+#[derive(Debug, PartialEq, Eq)]
+struct Undecided {
+    why: String,
+    /// The answer was shaped like a block at the edge, so a new sign-in comes last.
+    edge: bool,
 }
 
 /// A token M1 refused, and what it said.
@@ -650,14 +670,18 @@ fn verify(ctx: &Ctx, bundle: &TokenBundle) -> Result<(), CliError> {
 /// can own what it needs: an HTML page is no verdict here
 /// ([`M1Client::execute_in_window`]). Bounded by the HTTP client's 60 s timeout, which
 /// also bounds the hook.
-fn read_in_window(endpoint: &str, verbose: bool, bundle: &TokenBundle) -> Result<(), CliError> {
+fn read_in_window(
+    endpoint: &str,
+    verbose: bool,
+    bundle: &TokenBundle,
+) -> Result<(), WindowReadError> {
     let client = M1Client::new(endpoint, Some(bundle.access_token.clone()), verbose)?;
     let data = client.execute_in_window(
         graphql::VIEWER_IS_AUTHENTICATED,
         json!({}),
         Some("ViewerIsAuthenticated"),
     )?;
-    verdict(&data)
+    Ok(verdict(&data)?)
 }
 
 /// [`verdict`] for a session that is stored only if its read proves it.
@@ -675,7 +699,7 @@ fn verdict(data: &Value) -> Result<(), CliError> {
         Some(Value::Bool(false)) => Err(CliError::Auth(format!(
             "M1 did not accept the session (viewer.isAuthenticated is false) — it may be from \
              a signed-out tab or another environment; sign in again: `{}`. Nothing was stored.",
-            auth0::LOGIN
+            auth0::RELOGIN
         ))),
         _ => Err(CliError::Upstream(
             "M1's answer to the session check had no `viewer.isAuthenticated` — the shape may \
@@ -1340,6 +1364,13 @@ mod tests {
         crate::auth0::tests::jwt(claims)
     }
 
+    fn undecided(why: &str) -> Undecided {
+        Undecided {
+            why: why.into(),
+            edge: false,
+        }
+    }
+
     /// An expired session keeps the tab open, with no read and no renewal.
     #[test]
     fn an_expired_session_keeps_the_tab_open() {
@@ -1368,7 +1399,7 @@ mod tests {
     fn a_refused_session_waits_and_is_not_sent_again() {
         use std::cell::Cell;
         let reads = Cell::new(0);
-        let prove = |answer: Result<(), CliError>| {
+        let prove = |answer: Result<(), WindowReadError>| {
             reads.set(reads.get() + 1);
             answer
         };
@@ -1376,7 +1407,7 @@ mod tests {
         let dead = live_token();
         for _ in 0..3 {
             let answer = confirm_candidate(&held(&dead), &memory, |_| {
-                prove(Err(CliError::Auth("dummy refusal".into())))
+                prove(Err(CliError::Auth("dummy refusal".into()).into()))
             });
             match answer {
                 Confirm::NotYet(reason) => assert_eq!(reason, "dummy refusal"),
@@ -1416,8 +1447,7 @@ mod tests {
             assert!(warning.contains("Cloudflare bot check"), "{warning}");
             assert!(warning.contains("stored unverified"), "{warning}");
             assert!(
-                warning
-                    .contains("if reads keep failing, run `m1f auth login --browser --overwrite`"),
+                warning.contains(crate::client::SIGN_IN_MAY_NOT_HELP),
                 "{warning}"
             );
             for dead in [
@@ -1460,7 +1490,7 @@ mod tests {
     #[test]
     fn the_unverified_warning_prints_under_quiet() {
         let stored = |how: &str| format!("dummy line: {how}");
-        let quiet = stored_notes(true, false, Some("dummy cause."), stored);
+        let quiet = stored_notes(true, false, Some(&undecided("dummy cause.")), stored);
         assert_eq!(quiet.len(), 1, "{quiet:?}");
         assert!(quiet[0].starts_with("warning: "), "{quiet:?}");
         assert!(
@@ -1470,7 +1500,7 @@ mod tests {
         assert!(quiet[0].contains("`m1f accounts list`"), "{quiet:?}");
         assert!(!quiet[0].contains("auth status"), "{quiet:?}");
 
-        let loud = stored_notes(false, false, Some("dummy cause"), stored);
+        let loud = stored_notes(false, false, Some(&undecided("dummy cause")), stored);
         assert_eq!(loud.len(), 2, "{loud:?}");
         assert_eq!(loud[1], "dummy line: stored (unverified)");
 
@@ -1533,13 +1563,14 @@ mod tests {
             ),
         ] {
             let no_verify = login_args(flags).base.no_verify;
-            let result = login_result(&status, !stored_unread(no_verify, why));
+            let held = why.map(undecided);
+            let result = login_result(&status, !stored_unread(no_verify, held.as_ref()));
             assert_eq!(
                 result["verified"],
                 json!(!unread),
                 "{flags:?} {why:?}: {result}"
             );
-            let line = stored_notes(false, no_verify, why, |how| how.to_string());
+            let line = stored_notes(false, no_verify, held.as_ref(), |how| how.to_string());
             assert_eq!(
                 line.last().unwrap() == "stored (unverified)",
                 unread,
@@ -1611,7 +1642,8 @@ mod tests {
             );
             assert!(memory.refused.lock().unwrap().is_none(), "{status_line}");
             let why = memory.unverified.lock().unwrap().take().unwrap();
-            assert!(why.contains("Cloudflare bot check"), "{why}");
+            assert!(why.why.contains("Cloudflare bot check"), "{why:?}");
+            assert!(why.edge, "{why:?}");
         }
 
         let url = answering_once("401 Unauthorized", r#"{"message":"dummy refusal"}"#);
@@ -1701,13 +1733,13 @@ mod tests {
     fn a_dropped_connection_keeps_the_sign_in() {
         let memory = WindowMemory::default();
         let answer = confirm_candidate(&held(&live_token()), &memory, |_| {
-            Err(CliError::Upstream("dummy dropped connection".into()))
+            Err(CliError::Upstream("dummy dropped connection".into()).into())
         });
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert!(memory.refused.lock().unwrap().is_none());
         assert_eq!(
-            memory.unverified.lock().unwrap().as_deref(),
-            Some("dummy dropped connection")
+            *memory.unverified.lock().unwrap(),
+            Some(undecided("dummy dropped connection"))
         );
     }
 
@@ -2018,8 +2050,87 @@ mod tests {
     const ACCEPTED: &str = r#"{"data":{"viewer":{"isAuthenticated":true}}}"#;
 
     /// The hook's read of an answer, the window's way.
-    fn hooks_read(status: u16, body: &str) -> Result<(), CliError> {
-        crate::client::tests::window_answer(status, body).and_then(|data| verdict(&data))
+    fn hooks_read(status: u16, body: &str) -> Result<(), WindowReadError> {
+        crate::client::tests::window_answer(status, body).and_then(|data| Ok(verdict(&data)?))
+    }
+
+    /// Why the hook took the session on this answer.
+    fn undecided_after(status: u16, body: &str) -> Undecided {
+        let memory = WindowMemory::default();
+        let answer = confirm_candidate(&held(&live_token()), &memory, |_| hooks_read(status, body));
+        assert!(
+            matches!(answer, Confirm::Ready),
+            "{status} {body}: {answer:?}"
+        );
+        let why = memory.unverified.lock().unwrap().take();
+        why.unwrap_or_else(|| panic!("{status} {body}: the read must not decide"))
+    }
+
+    /// A block on this client is not cleared by signing in, so an answer shaped like one
+    /// does not offer a new sign-in as the fix: it comes last, after waiting.
+    #[test]
+    fn an_edge_shaped_answer_puts_the_new_sign_in_last() {
+        for (status, body) in [
+            (200, PAGE),
+            (403, PAGE),
+            (404, PAGE),
+            (403, ""),
+            (403, "Forbidden"),
+        ] {
+            let why = undecided_after(status, body);
+            assert!(why.edge, "{status} {body}: {why:?}");
+            let warning = unverified_warning(&why);
+            assert!(warning.contains("stored unverified"), "{warning}");
+            assert!(
+                warning.contains(
+                    "A new sign-in may not help, because a block like this is on the client \
+                     rather than the session"
+                ),
+                "{warning}"
+            );
+            let wait = warning.find("wait or try another network").unwrap();
+            let login = warning
+                .find("only if reads still fail after that, run `m1f auth login --browser --overwrite`")
+                .unwrap();
+            assert!(wait < login, "{warning}");
+            assert!(!warning.contains("reads keep failing"), "{warning}");
+        }
+    }
+
+    /// A throttle, an outage or a dropped connection can clear by the next read, and is
+    /// not a block a sign-in cannot clear, so it keeps its wording.
+    #[test]
+    fn a_throttle_an_outage_or_a_dropped_connection_keeps_its_wording() {
+        let mut undecideds = Vec::new();
+        for (status, body) in [
+            (429, PAGE),
+            (429, "{}"),
+            (500, "{}"),
+            (502, "bad gateway"),
+            (503, PAGE),
+            (200, ""),
+            (200, "{nope"),
+            (200, "{}"),
+        ] {
+            undecideds.push(undecided_after(status, body));
+        }
+        undecideds.push(undecided("dummy dropped connection"));
+        for why in undecideds {
+            assert!(!why.edge, "{why:?}");
+            let warning = unverified_warning(&why);
+            assert!(warning.contains("stored unverified"), "{warning}");
+            assert!(warning.contains("`m1f accounts list`"), "{warning}");
+            assert!(
+                warning.ends_with(
+                    "if reads keep failing, run `m1f auth login --browser --overwrite`."
+                ),
+                "{warning}"
+            );
+            assert!(
+                !warning.contains(crate::client::SIGN_IN_MAY_NOT_HELP),
+                "{warning}"
+            );
+        }
     }
 
     /// The hook against answers that cannot decide: each ends the wait with the

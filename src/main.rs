@@ -131,10 +131,11 @@ enum AuthCmd {
     /// over) and quits Chrome. It checks the session with one read before storing
     /// it, then renews it on its own. If that read cannot decide (a bot check, M1
     /// throttled or down), m1f stores the session anyway, since the page held the
-    /// only copy, and warns even under -q that it is unverified: if reads keep
-    /// failing, run `m1f auth login --browser --overwrite`. The wait is up to 10
-    /// minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary that is not in a
-    /// standard place. Pass --overwrite to replace a stored session.
+    /// only copy, and warns even under -q that it is unverified. If reads keep
+    /// failing, run `m1f auth login --browser --overwrite`; after a bot check, wait
+    /// or try another network first, since a new sign-in may not help. The window
+    /// waits up to 10 minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary
+    /// that is not in a standard place. Pass --overwrite to replace a stored session.
     ///
     /// The kept profile (owner-only, on disk) lets M1 remember this device, so
     /// a later sign-in often needs no input: the window opens, the session is
