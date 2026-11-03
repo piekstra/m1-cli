@@ -123,15 +123,24 @@ enum AuthCmd {
     ///
     ///   m1f auth login --browser
     ///
-    /// opens a Chrome window, with a throwaway profile, at
-    /// https://dashboard.m1.com. Sign in there as usual: the password and any
-    /// emailed code go to M1's page, never to m1f. Once you are in, m1f reads
-    /// the session from the dashboard's localStorage, closes the tab at once
-    /// (so the web app cannot rotate the refresh token it just handed over),
-    /// quits Chrome and deletes the profile. It checks the session with one
-    /// read before storing it, then renews it on its own. The wait is up to
-    /// 10 minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary that is
-    /// not in a standard place. Pass --overwrite to replace a stored session.
+    /// opens a Chrome window at https://dashboard.m1.com, in a profile m1f
+    /// keeps between sign-ins. Sign in there as usual: the password and any
+    /// emailed code go to M1's page, never to m1f. Once M1 accepts the session
+    /// in the dashboard's localStorage, m1f reads it, closes the tab at once
+    /// (so the web app cannot rotate the refresh token it just handed over)
+    /// and quits Chrome. It checks the session with one read before storing
+    /// it, then renews it on its own. The wait is up to 10 minutes; Ctrl-C
+    /// cancels. Set M1F_CHROME to a Chrome binary that is not in a standard
+    /// place. Pass --overwrite to replace a stored session.
+    ///
+    /// The kept profile (owner-only, on disk) lets M1 remember this device, so
+    /// a later sign-in often needs no input: the window opens, the session is
+    /// read and the window closes. m1f takes the session out of it, but it is a
+    /// full Chrome profile: M1's cookies, browsing history with full URLs, the
+    /// HTTP cache and site storage stay, after a failed sign-in too, until
+    /// `m1f auth logout` removes it. --fresh-profile signs in through a scratch
+    /// profile instead, removed when the window closes, and leaves the kept one
+    /// alone.
     ///
     /// Without Chrome, copy the session out of any browser and pipe it in
     /// (--browser-session):
@@ -162,7 +171,9 @@ enum AuthCmd {
     Login(commands::auth::LoginCmdArgs),
     /// Report credential/session state (auth-status/v1).
     Status,
-    /// Clear the session; --forget also removes stored tokens and identity.
+    /// Clear the session, then remove the kept browser profile; --forget also
+    /// removes stored tokens and identity. While Chrome is using the profile this
+    /// exits 1 with the rest already cleared and only the profile left.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -273,7 +284,8 @@ fn run(cli: &Cli) -> Result<(), CliError> {
     // "not logged in", where the real service would open the user's actual
     // session (and, from the ad-hoc-signed binary `cargo test` builds, raise
     // a macOS keychain prompt). It renames which entry is read; it never
-    // carries a session.
+    // carries a session. It does not move the kept browser profile, so under it
+    // `auth logout` leaves that profile alone and `--browser` uses a scratch one.
     let creds = match std::env::var("M1F_KEYCHAIN_SERVICE") {
         Ok(service) if !service.is_empty() => CredentialStore::new(service),
         _ => CredentialStore::for_binary(BIN),

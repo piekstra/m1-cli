@@ -217,12 +217,27 @@ impl M1Client {
         let resp = req.json(&body).send()?;
         let status = resp.status();
         let text = resp.text()?;
+        self.read_reply(status, &text, on_html)
+    }
 
+    /// What an answer says: its data, or the failure it carries.
+    fn read_reply(
+        &self,
+        status: reqwest::StatusCode,
+        text: &str,
+        on_html: impl FnOnce(reqwest::StatusCode) -> CliError,
+    ) -> Result<Value, CliError> {
         // A non-JSON body is the other way this fails: an HTML login page, a
         // CDN error page, or a WAF challenge. Those are not GraphQL at all.
-        let payload: Value = match serde_json::from_str(&text) {
+        //
+        // A throttle or an outage is read by its status first. It says nothing
+        // about the session, and Cloudflare answers both with HTML: read as a
+        // refusal, it would renew the session for nothing, and leave a browser
+        // capture waiting out its timeout on a session that may be live.
+        let payload: Value = match serde_json::from_str(text) {
             Ok(v) => v,
-            Err(_) if looks_like_html(&text) => return Err(on_html(status)),
+            Err(_) if status == 429 || status.is_server_error() => return Err(unavailable(status)),
+            Err(_) if looks_like_html(text) => return Err(on_html(status)),
             Err(_) => {
                 return Err(CliError::Upstream(format!(
                     "unparseable response from M1 (HTTP {status}, {} bytes)",
@@ -259,10 +274,7 @@ impl M1Client {
                 401 | 403 => CliError::Auth(format!(
                     "M1 rejected the request (HTTP {status}) — try `m1f auth login`"
                 )),
-                429 => CliError::Upstream(
-                    "rate limited by M1 (HTTP 429) — wait before retrying".into(),
-                ),
-                _ => CliError::Upstream(format!("M1 returned HTTP {status}")),
+                _ => unavailable(status),
             });
         }
 
@@ -425,6 +437,15 @@ fn mask_runs(s: &str, in_class: impl Fn(u8) -> bool, should_mask: impl Fn(&str) 
         i += ch.len_utf8();
     }
     out
+}
+
+/// A failed status that is no verdict on the session.
+fn unavailable(status: reqwest::StatusCode) -> CliError {
+    if status == 429 {
+        CliError::Upstream("rate limited by M1 (HTTP 429) — wait before retrying".into())
+    } else {
+        CliError::Upstream(format!("M1 returned HTTP {status}"))
+    }
 }
 
 /// An HTML page where a read expected GraphQL: a Cloudflare bot check, or a
@@ -639,7 +660,7 @@ pub fn classify_errors(errors: &[Value]) -> CliError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -884,6 +905,35 @@ mod tests {
         assert!(out.contains("NOT_FOUND"));
         assert!(out.contains("viewer"));
         assert!(out.contains("<redacted>"));
+    }
+
+    /// An answer as an ordinary read takes it, with no network: for the tests
+    /// here and the browser capture's.
+    pub(crate) fn read_answer(status: u16, body: &str) -> Result<Value, CliError> {
+        M1Client::anonymous("http://127.0.0.1:9", false)
+            .unwrap()
+            .read_reply(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                body,
+                html_error,
+            )
+    }
+
+    /// A throttle or an outage is no verdict on the session, whatever its body.
+    /// HTML on any other status still reads as a refusal.
+    #[test]
+    fn a_throttle_or_an_outage_is_upstream_whatever_its_body() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        for status in [429, 500, 502, 503, 504] {
+            for body in [PAGE, "upstream connect error", "{}", ""] {
+                let err = read_answer(status, body).unwrap_err();
+                assert_eq!(err.exit_code(), 5, "{status} {body:?}: {err}");
+            }
+        }
+        for status in [200, 403] {
+            let err = read_answer(status, PAGE).unwrap_err();
+            assert_eq!(err.exit_code(), 3, "{status}: {err}");
+        }
     }
 
     #[test]

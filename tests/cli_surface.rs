@@ -362,6 +362,90 @@ fn a_browser_login_refuses_other_sources_and_the_password_flags() {
     }
 }
 
+/// `--no-verify` cannot vouch for what a kept profile may still hold: exit 2 before
+/// the keychain or Chrome. HOME and Chrome point at nothing in case that changes.
+#[cfg(unix)]
+#[test]
+fn no_verify_needs_a_scratch_profile_with_the_browser_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    m1f()
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path())
+        .env("M1F_CHROME", "/nonexistent/m1f-test-chrome")
+        .arg("--config")
+        .arg(&config)
+        .args(["auth", "login", "--browser", "--no-verify"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--no-verify needs --fresh-profile",
+        ));
+}
+
+/// `--fresh-profile` picks the profile of a browser sign-in, so it means nothing
+/// without `--browser`: exit 2 at parse time, before the keychain, Chrome or M1.
+/// Each source here reaches the keychain if it ever parses.
+#[test]
+fn fresh_profile_needs_the_browser_flag() {
+    for extra in [
+        &[][..],
+        &["--browser-session"],
+        &["--stdin"],
+        &["--browser-session", "--stdin"],
+        &["--from-env", "M1F_TEST_SESSION"],
+        &["--username", "owner@example.invalid"],
+        &["--code", "000000"],
+    ] {
+        m1f()
+            .args(["auth", "login", "--fresh-profile"])
+            .args(extra)
+            .env("M1F_TEST_SESSION", "{}")
+            .write_stdin("{}")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--fresh-profile"));
+    }
+}
+
+/// The help says the profile stays on disk and how to remove it.
+#[test]
+fn the_help_says_what_happens_to_the_kept_profile() {
+    let login = m1f()
+        .args(["auth", "login", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&login.stdout);
+    assert!(
+        help.lines().any(|l| l.trim() == "--fresh-profile"),
+        "no --fresh-profile option in:\n{help}"
+    );
+    for needle in ["keeps between sign-ins", "m1f auth logout"] {
+        assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
+    }
+    let logout = m1f()
+        .args(["auth", "logout", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&logout.stdout);
+    for needle in ["kept browser profile", "exits 1", "already cleared"] {
+        assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
+    }
+}
+
+/// The capture takes the session out of the profile `m1f` keeps. The DevTools
+/// snippet runs in the owner's own browser, so it must never do the same.
+#[test]
+fn the_devtools_snippet_stays_read_only() {
+    let login = m1f()
+        .args(["auth", "login", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&login.stdout);
+    assert!(help.contains("copy(localStorage["), "{help}");
+    assert!(!help.contains("removeItem"), "{help}");
+}
+
 /// `--browser` is the primary route in the help an owner reads, with what it
 /// does and the Chrome override; the DevTools route follows as the fallback.
 #[test]

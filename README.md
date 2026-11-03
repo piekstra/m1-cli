@@ -46,17 +46,43 @@ m1f auth login --browser
 m1f auth status
 ```
 
-`--browser` opens a Chrome window (a throwaway profile) at
-<https://dashboard.m1.com>. Sign in there as usual; your password and any
-emailed code go to M1's page, never to `m1f`. Once you are in, `m1f` reads the
-session out of the page, closes the tab at once (so the web app cannot rotate
-the refresh token it just handed over), quits Chrome and deletes the profile.
-The wait is up to 10 minutes and Ctrl-C cancels. If Chrome is installed
-somewhere unusual, point `M1F_CHROME` at its binary. To replace a stored
-session, add `--overwrite`.
+`--browser` opens a Chrome window at <https://dashboard.m1.com>, in a profile
+`m1f` keeps between sign-ins. Sign in there as usual; your password and any
+emailed code go to M1's page, never to `m1f`. Once M1 accepts the session in the
+page, `m1f` takes it out of the page, closes the tab at once (so the web app
+cannot rotate the refresh token it just handed over) and quits Chrome. The wait
+is up to 10 minutes and Ctrl-C cancels. If Chrome is installed somewhere unusual,
+point `M1F_CHROME` at its binary. To replace a stored session, add `--overwrite`.
 
 `m1f` checks the session with one read (`viewer.isAuthenticated`) before it
 stores anything, then renews it on its own.
+
+The kept profile lets M1 remember this device, so a later sign-in often needs no
+password, code or bot check: the window opens, the session is read and the window
+closes. It lives at `~/Library/Application Support/piekstra.m1f/browser-profile`
+on macOS and under `$XDG_DATA_HOME` (or `~/.local/share`) on Linux, owner-only
+(`0700`); other systems use a scratch profile every time. `m1f auth login
+--browser --fresh-profile` signs in once through a scratch profile, deleted
+afterwards, and leaves the kept one alone.
+
+The trade is more than cookies. `m1f` takes the session's tokens out of the
+profile as it reads them, but it is a full Chrome profile, so it also keeps
+browsing history with full URLs, query strings included, the HTTP cache and site
+storage, for whatever you open in that window. Chrome's cookie encryption does
+not cover those: the directory's `0700` mode is their only protection, and
+ordinary backups usually include the directory ([`SECURITY.md`](SECURITY.md)). On
+Linux with no desktop keyring Chrome encrypts the cookies with a fixed, publicly
+known key, so there the session cookie has only `0700` too.
+
+The profile stays after a failed sign-in too, and every failure once the window
+has opened says so: a timeout, a closed window, Ctrl-C, M1 throttled or down during
+the check, a keychain write that fails. Those can leave a live session in it.
+`--browser --no-verify` needs `--fresh-profile`, since only M1's answer tells a
+session left in a kept profile from a live one. `m1f auth status` reads only the
+keychain and config, so it does not show the profile. `m1f auth logout` removes it
+and clears the stored session with it. While a sign-in or a Chrome window is using
+the profile, logout clears the session, exits 1 and says only the profile remains;
+close the window and run it again.
 [`docs/api.md`](docs/api.md#the-browser-capture-auth-login---browser) records
 exactly what is read and from which host, and
 [Trap 7](docs/api.md#trap-7-the-password-login-answers-a-cloudflare-403) the

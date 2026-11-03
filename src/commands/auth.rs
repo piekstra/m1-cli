@@ -16,6 +16,22 @@
 //! renewed with its refresh token from then on. No password or code passes
 //! through the CLI.
 //!
+//! The window runs in a Chrome profile `m1f` keeps between sign-ins, so M1's
+//! own sign-in remembers this device and a later `--browser` often needs no
+//! input. It is a full Chrome profile: M1's cookies, browsing history with full
+//! URLs, query strings included, the HTTP cache and site storage. Chrome's
+//! cookie encryption does not cover the last three, so the directory's `0700`
+//! mode is their only protection, and ordinary backups usually include it. On
+//! Linux with no desktop keyring Chrome encrypts the cookies with a fixed, publicly
+//! known key, so there the session cookie has only `0700` too. The profile stays
+//! on disk until `auth logout` removes it ([`logout_browser`]), after a failed
+//! sign-in too ([`through_the_window`]).
+//!
+//! The capture takes the session out of the profile as it reads it
+//! ([`crate::auth0::CAPTURE_EXPRESSION`]), and lets the tab close only on one M1
+//! accepts ([`confirm_candidate`]): a retired refresh token must not stay where
+//! the next window would read or present it.
+//!
 //! **The password login** (the rest of this module's history, below) is kept
 //! for the day the edge lets it through again, and names the 403 trap when it
 //! does not ([`crate::client::legacy_login_blocked`]).
@@ -39,11 +55,13 @@
 //! can say a code is expected. Codes are rate-limited: one attempt, then read
 //! the error rather than retrying.
 
+use std::sync::Mutex;
+
 use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
-use pk_cli_browser::{BrowserArgs, BrowserError, Launch, DEFAULT_TIMEOUT};
+use pk_cli_browser::{BrowserArgs, BrowserError, Captured, Confirm, Launch, DEFAULT_TIMEOUT};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::{output, CliError};
-use pk_cli_secrets::Secret;
+use pk_cli_secrets::{CredentialStore, Secret};
 use serde_json::{json, Value};
 
 use super::{emit, Ctx, TOKEN_ACCOUNT};
@@ -55,8 +73,14 @@ use crate::{auth0, graphql};
 /// takes no other source and none of the password login's flags; clap refuses
 /// those combinations (exit 2) before anything else runs. With
 /// `--browser-session` it means the same as alone.
+///
+/// `--fresh-profile` needs the same list of its own. Its `requires = "browser"`
+/// does not hold once one of these is present: clap counts a required argument
+/// as satisfied when it conflicts with an argument given, so `--stdin
+/// --fresh-profile` would parse and run the password login.
 #[derive(clap::Args, Debug)]
 #[command(mut_arg("browser", |a| a.conflicts_with_all(["stdin", "from_env", "username", "code"])))]
+#[command(mut_arg("fresh_profile", |a| a.conflicts_with_all(["stdin", "from_env", "username", "code"])))]
 pub struct LoginCmdArgs {
     #[command(flatten)]
     pub base: LoginArgs,
@@ -87,11 +111,16 @@ impl LoginCmdArgs {
     }
 
     /// The command that retries this browser-session login.
-    fn retry_hint(&self) -> &'static str {
-        if self.base.overwrite {
+    fn retry_hint(&self) -> String {
+        let login = if self.base.overwrite {
             auth0::RELOGIN
         } else {
             auth0::LOGIN
+        };
+        if self.browser.fresh_profile {
+            format!("{login} --fresh-profile")
+        } else {
+            login.to_string()
         }
     }
 }
@@ -199,43 +228,45 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
 /// already lapsed is renewed with its refresh token before the check, so a
 /// capture copied a while ago still lands.
 fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
-    let mut bundle = if args.browser.browser {
-        // The keychain check comes before the window: a sign-in the owner
-        // has finished is not thrown away for want of --overwrite.
-        refuse_overwrite(ctx, args)?;
-        let captured = capture_from_browser(ctx, args.retry_hint())?;
-        auth0::parse_browser_capture(captured.expose())?
-    } else {
-        if !args.base.source.stdin && args.base.source.from_env.is_none() {
-            return Err(CliError::Usage(format!(
-                "the browser session is captured with `{}`, or read from --stdin or --from-env \
-                 <VAR>, not typed: copy it with the DevTools snippet in `m1f auth login --help`, \
-                 then run `pbpaste | {}`",
-                auth0::LOGIN,
-                auth0::STDIN_LOGIN
-            )));
-        }
-        // The pasted session is input: read and check it before the keychain.
-        let raw = args.base.source.read(None)?;
-        let bundle = auth0::parse_captured(raw.expose())?;
-        refuse_overwrite(ctx, args)?;
-        bundle
-    };
-    if !args.base.no_verify {
-        if expiry_passed(&bundle) {
-            let (Some(grant), Some(refresh)) = (bundle.auth0.clone(), bundle.refresh_token.clone())
-            else {
-                return Err(CliError::Auth(format!(
-                    "the session's access token has expired and it carries no refresh token — \
-                     sign in again: `{}`",
-                    args.retry_hint()
-                )));
-            };
-            bundle = auth0::refresh(&grant, &refresh, ctx.common.verbose)?;
-        }
-        verify(ctx, &bundle)?;
+    if args.browser.browser {
+        return browser_sign_in(ctx, args);
     }
-    ctx.store_tokens(&bundle)?;
+    if !args.base.source.stdin && args.base.source.from_env.is_none() {
+        return Err(CliError::Usage(format!(
+            "the browser session is captured with `{}`, or read from --stdin or --from-env \
+             <VAR>, not typed: copy it with the DevTools snippet in `m1f auth login --help`, \
+             then run `pbpaste | {}`",
+            auth0::LOGIN,
+            auth0::STDIN_LOGIN
+        )));
+    }
+    // The pasted session is input: read and check it before the keychain.
+    let raw = args.base.source.read(None)?;
+    let mut bundle = auth0::parse_captured(raw.expose())?;
+    refuse_overwrite(ctx, args)?;
+    // Only a copied session is renewed here. One from the window was confirmed
+    // unexpired a moment ago, and its refresh token is never presented: it may
+    // be a retired one (see `confirm_candidate`).
+    if !args.base.no_verify && expiry_passed(&bundle) {
+        let (Some(grant), Some(refresh)) = (bundle.auth0.clone(), bundle.refresh_token.clone())
+        else {
+            return Err(CliError::Auth(format!(
+                "the session's access token has expired and it carries no refresh token — \
+                 sign in again: `{}`",
+                args.retry_hint()
+            )));
+        };
+        bundle = auth0::refresh(&grant, &refresh, ctx.common.verbose)?;
+    }
+    store_session(ctx, args, &bundle)
+}
+
+/// The one check and the one keychain item both routes share.
+fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result<(), CliError> {
+    if !args.base.no_verify {
+        verify(ctx, bundle)?;
+    }
+    ctx.store_tokens(bundle)?;
     ctx.clear_pending()?;
     if !ctx.common.quiet {
         let renewal = if bundle.refresh_token.is_some() {
@@ -248,17 +279,23 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
         } else {
             "verified and stored"
         };
-        // The browser route closed its tab and Chrome itself; a copied
-        // session may still be held by the window it was copied from.
+        // The browser route closed its tab and Chrome itself, and may leave a
+        // profile; a copied session may still be held by the window it was
+        // copied from.
         let close = if args.browser.browser {
-            ""
+            if keeps_profile(scratch_profile(ctx.creds, args)) {
+                " The browser profile stays on disk for the next sign-in; `m1f auth logout` \
+                 removes it."
+            } else {
+                ""
+            }
         } else {
             " If you copied it from a browser you keep using, close that window now (see `m1f \
              auth login --help`)."
         };
         eprintln!("M1 browser session {how} in the OS keychain; {renewal}.{close}");
     }
-    let status = status_dto(ctx, Some(&bundle), ctx.cfg.username.as_deref());
+    let status = status_dto(ctx, Some(bundle), ctx.cfg.username.as_deref());
     status.emit(ctx.common.json);
     Ok(())
 }
@@ -272,20 +309,173 @@ fn refuse_overwrite(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Open a Chrome window at the dashboard, wait while the owner signs in, and
-/// read the session out of it ([`auth0::browser_capture`]). The tab closes the
-/// moment the session is read, then Chrome quits and its profile is deleted.
-fn capture_from_browser(ctx: &Ctx, retry_hint: &str) -> Result<Secret, CliError> {
+/// `--browser`: open a Chrome window at the dashboard, wait until it holds a
+/// session M1 accepts, and read it out ([`auth0::browser_capture`]). The tab
+/// closes the moment the session is read, then Chrome quits. Its profile stays
+/// for the next sign-in, unless a scratch one was asked for
+/// ([`scratch_profile`]).
+///
+/// `--no-verify` is refused in a kept profile: the hook's read is the only thing
+/// that tells a session retired since an earlier sign-in from a live one.
+fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
+    let scratch = scratch_profile(ctx.creds, args);
+    if args.base.no_verify && keeps_profile(scratch) {
+        return Err(CliError::Usage(format!(
+            "--no-verify needs --fresh-profile with --browser: the kept profile can still hold \
+             an earlier session, and only M1's answer tells a retired one from a live one. Run \
+             `{} --no-verify --fresh-profile`, or drop --no-verify",
+            auth0::LOGIN
+        )));
+    }
+    // The keychain check comes before the window: a sign-in the owner has
+    // finished is not thrown away for want of --overwrite.
+    refuse_overwrite(ctx, args)?;
     let launch = Launch::new(crate::BIN)
         .url(crate::client::WEB_ORIGIN)
+        .fresh_profile(scratch)
         .quiet(ctx.common.quiet)
-        .login_hint(retry_hint);
-    match pk_cli_browser::capture(launch, &auth0::browser_capture()?, DEFAULT_TIMEOUT) {
-        Ok(captured) => captured
-            .into_value()
-            .ok_or_else(|| CliError::Other("the browser capture read no session".into())),
-        Err(BrowserError::ChromeNotFound(why)) => Err(chrome_not_found(&why)),
-        Err(e) => Err(e.into()),
+        .login_hint(args.retry_hint());
+    let endpoint = ctx.cfg.base_url();
+    let verbose = ctx.common.verbose;
+    let no_verify = args.base.no_verify;
+    let refused = Mutex::new(None);
+    let capture = auth0::browser_capture()?.confirm(move |candidate| {
+        confirm_candidate(candidate, &refused, |bundle| {
+            if no_verify {
+                Ok(())
+            } else {
+                read_viewer(&endpoint, verbose, bundle)
+            }
+        })
+    });
+    through_the_window(
+        scratch,
+        || pk_cli_browser::capture(launch, &capture, DEFAULT_TIMEOUT),
+        |bundle| store_session(ctx, args, &bundle),
+    )
+}
+
+/// A browser sign-in from the window on, with every way it can fail in one
+/// place, so a new one cannot miss [`failed_sign_in`]: the window's own ending,
+/// the confirm hook's, the read after it and the keychain write.
+///
+/// Only three failures skip the note, because they end the sign-in before Chrome
+/// runs in the profile: no Chrome, a malformed launch, and a profile refused for
+/// repair, whose own message names the path and the fix.
+fn through_the_window(
+    scratch: bool,
+    capture: impl FnOnce() -> Result<Captured, BrowserError>,
+    finish: impl FnOnce(TokenBundle) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    let captured = match capture() {
+        Err(BrowserError::ChromeNotFound(why)) => return Err(chrome_not_found(&why)),
+        Err(e @ (BrowserError::Invalid(_) | BrowserError::Profile(_))) => return Err(e.into()),
+        other => other,
+    };
+    captured
+        .map_err(CliError::from)
+        .and_then(|captured| {
+            let session = captured
+                .value()
+                .ok_or_else(|| CliError::Other("the browser capture read no session".into()))?;
+            finish(auth0::parse_browser_capture(session.expose())?)
+        })
+        .map_err(|e| failed_sign_in(e, scratch))
+}
+
+/// Whether this sign-in runs in a scratch profile: `--fresh-profile`, or a
+/// keychain pointed away from the real session, which must not sign in from the
+/// real session's cookies.
+fn scratch_profile(creds: &CredentialStore, args: &LoginCmdArgs) -> bool {
+    args.browser.fresh_profile || keychain_redirected(creds)
+}
+
+/// Whether `M1F_KEYCHAIN_SERVICE` has this run on another keychain service. The
+/// kept profile has no such variable: there is only the real one.
+fn keychain_redirected(creds: &CredentialStore) -> bool {
+    creds.service() != CredentialStore::for_binary(crate::BIN).service()
+}
+
+/// Whether a sign-in runs in the kept profile: not in a scratch one, and only
+/// where the crate keeps one (`Launch::spawn`'s macOS and Linux).
+fn keeps_profile(scratch: bool) -> bool {
+    !scratch && cfg!(unix)
+}
+
+/// What a failed sign-in leaves behind, for its error. The kept profile stays
+/// with whatever the sign-in got as far as, which can be a live session, and the
+/// owner may move on and never log out.
+const PROFILE_STAYS: &str = "The browser profile stays on disk with what that window left in it, \
+                             which can be a live session; once no window is using it, `m1f auth \
+                             logout` removes it and clears any stored session with it, and \
+                             `--fresh-profile` signs in without it.";
+
+/// A failed sign-in, saying that the kept profile stays. A scratch one is
+/// already gone. The exit code does not change.
+fn failed_sign_in(error: CliError, scratch: bool) -> CliError {
+    if !keeps_profile(scratch) {
+        return error;
+    }
+    let note = |m: String| format!("{}. {PROFILE_STAYS}", m.trim_end_matches('.'));
+    match error {
+        CliError::Usage(m) => CliError::Usage(note(m)),
+        CliError::Auth(m) => CliError::Auth(note(m)),
+        CliError::NotFound(m) => CliError::NotFound(note(m)),
+        CliError::Upstream(m) => CliError::Upstream(note(m)),
+        CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(note(m)),
+        CliError::Keychain(m) => CliError::Keychain(note(m)),
+        CliError::Other(m) => CliError::Other(note(m)),
+    }
+}
+
+/// Whether the session in the window is one to take, which closes the tab.
+///
+/// A capture takes the session out of the profile it reads from, but one can
+/// still be there as the page opens: left by a sign-in that ended before the
+/// read, or by a Chrome stopped before its removal reached the disk. It may be
+/// expired or already retired. Taking it would close the tab before M1's page
+/// could ask the owner to sign in. So a session that is expired or that M1
+/// refuses keeps the tab open.
+///
+/// An expired session is never renewed here: its refresh token may be one
+/// `m1f` has already rotated, and Auth0 answers that reuse by revoking the
+/// whole family. An unexpired one M1 accepts has not been rotated, because
+/// `m1f` renews only after M1 refuses the access token. A token M1 refused is
+/// remembered and not sent again, so a tab sitting on a dead session costs one
+/// read rather than one per poll. A failure waiting will not fix (M1 down, a
+/// bot check) ends the wait.
+fn confirm_candidate(
+    candidate: &Captured,
+    refused: &Mutex<Option<Secret>>,
+    prove: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
+) -> Confirm {
+    const DEAD: &str = "M1 refused the session this window holds, and no new sign-in has finished";
+    let Some(value) = candidate.value() else {
+        return Confirm::NotYet("the page held no session".into());
+    };
+    let bundle = match auth0::parse_browser_capture(value.expose()) {
+        Ok(bundle) => bundle,
+        Err(e) => return Confirm::NotYet(e.to_string()),
+    };
+    if expiry_passed(&bundle) {
+        return Confirm::NotYet(
+            "the session this window holds has expired, and no new sign-in has finished".into(),
+        );
+    }
+    let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
+    if refused
+        .as_ref()
+        .is_some_and(|token| token.expose() == bundle.access_token)
+    {
+        return Confirm::NotYet(DEAD.into());
+    }
+    match prove(&bundle) {
+        Ok(()) => Confirm::Ready,
+        Err(CliError::Auth(_)) => {
+            *refused = Some(Secret::new(bundle.access_token.clone()));
+            Confirm::NotYet(DEAD.into())
+        }
+        Err(e) => Confirm::Fail(e),
     }
 }
 
@@ -302,11 +492,14 @@ fn chrome_not_found(why: &str) -> CliError {
 /// One authenticated read: `viewer.isAuthenticated` must be `true`. M1
 /// answers `false` — not an error — for a token it does not accept.
 fn verify(ctx: &Ctx, bundle: &TokenBundle) -> Result<(), CliError> {
-    let client = M1Client::new(
-        &ctx.cfg.base_url(),
-        Some(bundle.access_token.clone()),
-        ctx.common.verbose,
-    )?;
+    read_viewer(&ctx.cfg.base_url(), ctx.common.verbose, bundle)
+}
+
+/// [`verify`] without the [`Ctx`], so the capture's confirm hook can own what
+/// it needs. Bounded by the HTTP client's 60 s timeout, which also bounds the
+/// hook.
+fn read_viewer(endpoint: &str, verbose: bool, bundle: &TokenBundle) -> Result<(), CliError> {
+    let client = M1Client::new(endpoint, Some(bundle.access_token.clone()), verbose)?;
     let data = client.execute(
         graphql::VIEWER_IS_AUTHENTICATED,
         json!({}),
@@ -390,14 +583,74 @@ pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), C
     if args.forget {
         store.clear()?;
     }
+    // Last, so a refusal (its window still open) leaves the rest done.
+    let done = logout_browser(ctx.creds, args.forget, || {
+        pk_cli_browser::forget_profile(crate::BIN)
+    })?;
     if !ctx.common.quiet {
-        eprintln!("logged out (stored tokens cleared)");
+        eprintln!("{done}");
         eprintln!(
             "note: this clears the local copy only — to end the session at M1, change \
              your password or sign out other devices in M1's own app"
         );
     }
     Ok(())
+}
+
+/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps holds
+/// M1's own cookies, its browsing history and cache, so a logout removes it too
+/// and the next sign-in starts signed out. The removal is passed in: the binary
+/// binds it to `forget_profile(BIN)`, the tests to `forget_profile_in` under a
+/// temp dir, so a test never removes the owner's real profile. Returns the
+/// status line. A refusal comes after everything else is cleared, so its error
+/// says so ([`logout_refused`]).
+///
+/// With `M1F_KEYCHAIN_SERVICE` set, this logout cleared some other service's
+/// tokens, and the real session is still there. The profile has no such variable,
+/// so it is left alone, and the line says so.
+fn logout_browser(
+    creds: &CredentialStore,
+    forgot: bool,
+    forget: impl FnOnce() -> Result<bool, BrowserError>,
+) -> Result<String, CliError> {
+    if keychain_redirected(creds) {
+        return Ok(format!(
+            "logged out of keychain service `{}` (stored tokens cleared); browser profile left \
+             in place, because M1F_KEYCHAIN_SERVICE is set",
+            creds.service()
+        ));
+    }
+    let removed = forget().map_err(|e| logout_refused(forgot, &e))?;
+    Ok(format!(
+        "logged out (stored tokens cleared{})",
+        if removed {
+            "; browser profile removed"
+        } else {
+            ""
+        }
+    ))
+}
+
+/// A logout that exits 1 has still done most of its work, so its error says
+/// what is already gone, that only the browser profile remains and how to
+/// finish.
+fn logout_refused(forgot: bool, error: &BrowserError) -> CliError {
+    let cleared = if forgot {
+        "the stored session and config identity are cleared"
+    } else {
+        "the stored session is cleared"
+    };
+    let finish = match error {
+        BrowserError::ProfileInUse(_) => "Once that window is closed, run",
+        _ => "Repair or delete that path, then run",
+    };
+    let reason = error.to_string();
+    CliError::Other(format!(
+        "partly logged out: {cleared} and only the browser profile remains. {}. {finish} `{} auth \
+         logout` again to remove it.",
+        reason.trim_end_matches('.'),
+        crate::BIN
+    ))
 }
 
 /// Raw keychain write for rotation / headless setup.
@@ -755,6 +1008,440 @@ mod tests {
         );
     }
 
+    /// A session the kept profile holds, as the capture would read it.
+    fn held(access_token: &str) -> Captured {
+        let entry = crate::auth0::tests::cache_entry(access_token).to_string();
+        Captured::for_test("M1", crate::auth0::DASHBOARD_HOST)
+            .value(entry)
+            .build()
+    }
+
+    fn live_token() -> String {
+        let claims = crate::auth0::tests::m1_claims(4_102_444_800);
+        crate::auth0::tests::jwt(claims)
+    }
+
+    /// What the kept profile changes: its last session is there as the page
+    /// opens. An expired one keeps the tab open with no read and no renewal.
+    #[test]
+    fn an_expired_session_in_the_kept_profile_keeps_the_tab_open() {
+        let expired = crate::auth0::tests::jwt(crate::auth0::tests::m1_claims(1));
+        let refused = Mutex::new(None);
+        let answer = confirm_candidate(&held(&expired), &refused, |_| {
+            panic!("an expired session must not reach M1")
+        });
+        match answer {
+            Confirm::NotYet(reason) => assert!(reason.contains("expired"), "{reason}"),
+            other => panic!("must keep waiting: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_session_m1_accepts_closes_the_tab() {
+        let refused = Mutex::new(None);
+        let answer = confirm_candidate(&held(&live_token()), &refused, |_| Ok(()));
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+    }
+
+    /// A live-looking session M1 refuses keeps the tab open for the owner to
+    /// sign in, and is read once however many polls see it. The session that
+    /// replaces it is read.
+    #[test]
+    fn a_refused_session_waits_and_is_not_sent_again() {
+        use std::cell::Cell;
+        let reads = Cell::new(0);
+        let prove = |answer: Result<(), CliError>| {
+            reads.set(reads.get() + 1);
+            answer
+        };
+        let refused = Mutex::new(None);
+        let dead = live_token();
+        for _ in 0..3 {
+            let answer = confirm_candidate(&held(&dead), &refused, |_| {
+                prove(Err(CliError::Auth("dummy refusal".into())))
+            });
+            match answer {
+                Confirm::NotYet(reason) => assert!(reason.contains("refused"), "{reason}"),
+                other => panic!("must keep waiting: {other:?}"),
+            }
+        }
+        assert_eq!(reads.get(), 1, "the dead token was sent again");
+
+        let renewed = crate::auth0::tests::jwt(crate::auth0::tests::m1_claims(4_102_444_801));
+        let answer = confirm_candidate(&held(&renewed), &refused, |_| prove(Ok(())));
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+        assert_eq!(reads.get(), 2);
+    }
+
+    #[test]
+    fn a_failure_waiting_will_not_fix_ends_the_wait() {
+        let refused = Mutex::new(None);
+        let answer = confirm_candidate(&held(&live_token()), &refused, |_| {
+            Err(CliError::Upstream("dummy outage".into()))
+        });
+        match answer {
+            Confirm::Fail(e) => assert_eq!(e.exit_code(), 5),
+            other => panic!("must end the wait: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_window_with_nothing_readable_keeps_waiting() {
+        let refused = Mutex::new(None);
+        let none = Captured::for_test("M1", crate::auth0::DASHBOARD_HOST).build();
+        let junk = Captured::for_test("M1", crate::auth0::DASHBOARD_HOST)
+            .value("not a session")
+            .build();
+        for candidate in [none, junk] {
+            let answer = confirm_candidate(&candidate, &refused, |_| panic!("nothing to read yet"));
+            assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        }
+    }
+
+    /// The kept profile's directory for `root`, with something in it.
+    fn kept_profile(root: &std::path::Path) -> std::path::PathBuf {
+        let profile = root
+            .join(format!("piekstra.{}", crate::BIN))
+            .join("browser-profile");
+        std::fs::create_dir_all(profile.join("Default")).unwrap();
+        profile
+    }
+
+    /// The logout's browser step on a temp dir through `test-util`'s
+    /// `forget_profile_in`, so a test never removes the owner's real profile.
+    #[test]
+    fn logout_removes_the_kept_browser_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = kept_profile(root.path());
+        let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
+        assert_eq!(
+            logout_browser(&real_store(), false, forget).unwrap(),
+            "logged out (stored tokens cleared; browser profile removed)"
+        );
+        assert!(!profile.exists());
+        // The parent is the CLI's, and stays.
+        assert!(profile.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn logout_with_no_kept_profile_still_logs_out() {
+        let root = tempfile::tempdir().unwrap();
+        let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
+        assert_eq!(
+            logout_browser(&real_store(), false, forget).unwrap(),
+            "logged out (stored tokens cleared)"
+        );
+    }
+
+    /// A profile a sign-in is using is refused, exit 1, and left alone, and the
+    /// error says what is already gone and how to finish. A real sign-in holds it
+    /// here, through a stand-in for Chrome that reports a debug port and sleeps,
+    /// so the real lock is what refuses. No Chrome starts.
+    #[cfg(unix)]
+    #[test]
+    fn logout_refuses_a_kept_profile_a_sign_in_is_using() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let stand_in = tools.path().join("stand-in-chrome");
+        std::fs::write(
+            &stand_in,
+            "#!/bin/sh
+for a in \"$@\"; do case \"$a\" in --user-data-dir=*)              d=\"${a#--user-data-dir=}\";; esac; done
+             printf '1\\n/devtools/browser/dummy\\n' > \"$d/DevToolsActivePort\"
+exec sleep 60
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let signing_in = Launch::new(crate::BIN)
+            .url(crate::client::WEB_ORIGIN)
+            .chrome(&stand_in)
+            .ctrl_c(false)
+            .quiet(true)
+            .profile_root(root.path())
+            .spawn()
+            .unwrap();
+
+        let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
+        let err = logout_browser(&real_store(), false, forget).unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        let message = err.to_string();
+        for needle in [
+            "the stored session is cleared",
+            "only the browser profile remains",
+            "log out again",
+            "Once that window is closed",
+            "`m1f auth logout` again",
+        ] {
+            assert!(message.contains(needle), "missing {needle:?} in: {message}");
+        }
+        let profile = root
+            .path()
+            .join(format!("piekstra.{}", crate::BIN))
+            .join("browser-profile");
+        assert!(profile.exists(), "a profile in use must be left alone");
+
+        drop(signing_in);
+        let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
+        assert_eq!(
+            logout_browser(&real_store(), false, forget).unwrap(),
+            "logged out (stored tokens cleared; browser profile removed)"
+        );
+        assert!(!profile.exists());
+    }
+
+    /// `CredentialStore` touches the keychain only when read or written, so
+    /// these never do.
+    fn real_store() -> CredentialStore {
+        CredentialStore::for_binary(crate::BIN)
+    }
+
+    /// The failures a sign-in can end in once Chrome has run in the profile,
+    /// with the exit code each must keep.
+    fn window_failures() -> Vec<(BrowserError, i32)> {
+        vec![
+            (BrowserError::TimedOut("dummy.".into()), 3),
+            (BrowserError::WindowClosed("dummy.".into()), 3),
+            (BrowserError::Canceled, 1),
+            (BrowserError::Launch("dummy.".into()), 1),
+            (BrowserError::ProfileInUse("dummy.".into()), 1),
+            (
+                BrowserError::Handler(CliError::Upstream("dummy.".into())),
+                5,
+            ),
+            (BrowserError::Handler(CliError::Auth("dummy.".into())), 3),
+        ]
+    }
+
+    fn assert_says_it_stays(err: &CliError) {
+        if cfg!(unix) {
+            let message = err.to_string();
+            assert!(
+                message.contains("browser profile stays on disk"),
+                "{message}"
+            );
+            assert!(message.contains("`m1f auth logout`"), "{message}");
+        }
+    }
+
+    /// Every way a sign-in can fail with Chrome in the kept profile says so,
+    /// whichever step failed, and keeps its exit code. A scratch profile is
+    /// already gone, so it says nothing.
+    #[test]
+    fn every_failed_sign_in_says_the_kept_profile_stays() {
+        for (error, code) in window_failures() {
+            let err = through_the_window(false, || Err(error), |_| panic!("no session to store"))
+                .unwrap_err();
+            assert_eq!(err.exit_code(), code, "{err}");
+            assert_says_it_stays(&err);
+        }
+        for (error, code) in window_failures() {
+            let err = through_the_window(true, || Err(error), |_| panic!("no session to store"))
+                .unwrap_err();
+            assert_eq!(err.exit_code(), code, "{err}");
+            assert!(!err.to_string().contains("stays on disk"), "{err}");
+        }
+    }
+
+    /// After the capture the session is read and stored, and a live session can
+    /// be left in the profile if that fails.
+    #[test]
+    fn a_failure_after_the_capture_says_the_kept_profile_stays() {
+        for (failure, code) in [
+            (CliError::Keychain("dummy: could not write".into()), 1),
+            (CliError::Upstream("dummy outage".into()), 5),
+            (CliError::Auth("dummy refusal".into()), 3),
+        ] {
+            let captured = held(&live_token());
+            let err = through_the_window(false, || Ok(captured), |_| Err(failure)).unwrap_err();
+            assert_eq!(err.exit_code(), code, "{err}");
+            assert_says_it_stays(&err);
+        }
+        let empty = Captured::for_test("M1", crate::auth0::DASHBOARD_HOST).build();
+        let err =
+            through_the_window(false, || Ok(empty), |_| panic!("nothing was read")).unwrap_err();
+        assert_says_it_stays(&err);
+
+        let captured = held(&live_token());
+        let err = through_the_window(
+            true,
+            || Ok(captured),
+            |_| Err(CliError::Keychain("dummy: could not write".into())),
+        )
+        .unwrap_err();
+        assert!(!err.to_string().contains("stays on disk"), "{err}");
+
+        let captured = held(&live_token());
+        through_the_window(false, || Ok(captured), |_| Ok(())).unwrap();
+    }
+
+    /// These end the sign-in before Chrome runs in the profile.
+    #[test]
+    fn a_failure_before_chrome_runs_does_not_mention_the_profile_staying() {
+        for error in [
+            BrowserError::ChromeNotFound("dummy".into()),
+            BrowserError::Invalid("dummy".into()),
+            BrowserError::Profile("dummy".into()),
+        ] {
+            let err = through_the_window(false, || Err(error), |_| panic!("no session to store"))
+                .unwrap_err();
+            assert_eq!(err.exit_code(), 1, "{err}");
+            assert!(!err.to_string().contains("stays on disk"), "{err}");
+        }
+    }
+
+    /// The note changes the message and never the exit code.
+    #[test]
+    fn the_note_keeps_every_exit_code() {
+        for (error, code) in [
+            (CliError::Usage("dummy.".into()), 2),
+            (CliError::Auth("dummy.".into()), 3),
+            (CliError::NotFound("dummy.".into()), 4),
+            (CliError::Upstream("dummy.".into()), 5),
+            (CliError::ConfirmationRequired("dummy.".into()), 6),
+            (CliError::Keychain("dummy.".into()), 1),
+            (CliError::Other("dummy.".into()), 1),
+        ] {
+            let err = failed_sign_in(error, false);
+            assert_eq!(err.exit_code(), code, "{err}");
+            assert_says_it_stays(&err);
+            if cfg!(unix) {
+                assert!(err.to_string().contains("dummy. The browser"), "{err}");
+            }
+        }
+    }
+
+    /// The hook against real answers: a throttle or an outage ends the wait
+    /// rather than loop on it, a refusal keeps the tab open, and only a `true`
+    /// closes it. Neither of the first two is remembered as a refused token.
+    #[test]
+    fn a_read_that_cannot_decide_ends_the_wait_and_accepts_nothing() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        let read = |status: u16, body: &str| {
+            crate::client::tests::read_answer(status, body).and_then(|data| verdict(&data))
+        };
+        let accepted = r#"{"data":{"viewer":{"isAuthenticated":true}}}"#;
+        let declined = r#"{"data":{"viewer":{"isAuthenticated":false}}}"#;
+        let token = live_token();
+
+        for (status, body) in [
+            (429, PAGE),
+            (429, "{}"),
+            (429, accepted),
+            (500, "{}"),
+            (502, "bad gateway"),
+            (503, PAGE),
+            (503, accepted),
+            (200, r#"{"data":null}"#),
+            (200, r#"{"data":{"viewer":{}}}"#),
+        ] {
+            let refused = Mutex::new(None);
+            let answer = confirm_candidate(&held(&token), &refused, |_| read(status, body));
+            match answer {
+                Confirm::Fail(e) => assert_eq!(e.exit_code(), 5, "{status} {body}: {e}"),
+                other => panic!("{status} {body} must end the wait: {other:?}"),
+            }
+            assert!(refused.lock().unwrap().is_none(), "{status} {body}");
+        }
+
+        for (status, body) in [
+            (401, "{}"),
+            (403, "{}"),
+            (403, PAGE),
+            (200, PAGE),
+            (200, declined),
+        ] {
+            let refused = Mutex::new(None);
+            let answer = confirm_candidate(&held(&token), &refused, |_| read(status, body));
+            assert!(
+                matches!(answer, Confirm::NotYet(_)),
+                "{status} {body}: {answer:?}"
+            );
+            assert!(refused.lock().unwrap().is_some(), "{status} {body}");
+        }
+
+        let refused = Mutex::new(None);
+        let answer = confirm_candidate(&held(&token), &refused, |_| read(200, accepted));
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+    }
+
+    /// `M1F_KEYCHAIN_SERVICE` moves the keychain, not the profile: a logout under
+    /// it must never reach the real one, and says it left it.
+    #[test]
+    fn a_redirected_keychain_leaves_the_real_profile_alone() {
+        let elsewhere = CredentialStore::new("m1f-dummy-service");
+        assert!(keychain_redirected(&elsewhere));
+        assert!(!keychain_redirected(&real_store()));
+
+        let line = logout_browser(&elsewhere, false, || {
+            panic!("a logout under a redirected keychain must not touch the profile")
+        })
+        .unwrap();
+        for needle in [
+            "m1f-dummy-service",
+            "browser profile left in place",
+            "M1F_KEYCHAIN_SERVICE",
+        ] {
+            assert!(line.contains(needle), "missing {needle:?} in: {line}");
+        }
+
+        // Naming the real service is the real logout.
+        let same = CredentialStore::new(real_store().service().to_string());
+        let line = logout_browser(&same, false, || Ok(true)).unwrap();
+        assert!(line.contains("browser profile removed"), "{line}");
+    }
+
+    /// A keychain pointed elsewhere signs in through a scratch profile too, so
+    /// it cannot read the real session out of the kept one.
+    #[test]
+    fn a_redirected_keychain_signs_in_from_a_scratch_profile() {
+        let parse = |flags: &[&str]| {
+            let mut argv = vec!["test"];
+            argv.extend_from_slice(flags);
+            <LoginCmdArgs as clap::Args>::augment_args(clap::Command::new("test"))
+                .try_get_matches_from(argv)
+                .and_then(|m| <LoginCmdArgs as clap::FromArgMatches>::from_arg_matches(&m))
+                .unwrap()
+        };
+        let elsewhere = CredentialStore::new("m1f-dummy-service");
+        assert!(scratch_profile(&elsewhere, &parse(&["--browser"])));
+        assert!(!scratch_profile(&real_store(), &parse(&["--browser"])));
+        assert!(scratch_profile(
+            &real_store(),
+            &parse(&["--browser", "--fresh-profile"])
+        ));
+    }
+
+    /// A profile that needs repair is refused, not followed: a symlink's
+    /// target survives the logout's refusal.
+    #[cfg(unix)]
+    #[test]
+    fn logout_refuses_a_kept_profile_that_needs_repair() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let profile = root
+            .path()
+            .join(format!("piekstra.{}", crate::BIN))
+            .join("browser-profile");
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &profile).unwrap();
+        let forget = || pk_cli_browser::forget_profile_in(root.path(), crate::BIN);
+        let err = logout_browser(&real_store(), true, forget).unwrap_err();
+        assert_eq!(err.exit_code(), 1, "{err}");
+        let message = err.to_string();
+        for needle in [
+            "the stored session and config identity are cleared",
+            "only the browser profile remains",
+            "symlink",
+            "Repair or delete that path",
+            "`m1f auth logout` again",
+        ] {
+            assert!(message.contains(needle), "missing {needle:?} in: {message}");
+        }
+        assert!(elsewhere.path().exists());
+    }
+
     #[test]
     fn the_retry_hint_keeps_overwrite() {
         let parse = |flags: &[&str]| {
@@ -772,6 +1459,16 @@ mod tests {
         assert_eq!(
             parse(&["--browser", "--overwrite"]).retry_hint(),
             crate::auth0::RELOGIN
+        );
+        // `--browser-session` beside `--browser` means the same as alone.
+        assert_eq!(
+            parse(&["--browser", "--browser-session", "--fresh-profile"]).retry_hint(),
+            format!("{} --fresh-profile", crate::auth0::LOGIN)
+        );
+        // A retry stays in the scratch profile it was asked to use.
+        assert_eq!(
+            parse(&["--browser", "--overwrite", "--fresh-profile"]).retry_hint(),
+            format!("{} --fresh-profile", crate::auth0::RELOGIN)
         );
     }
 

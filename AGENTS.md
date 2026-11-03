@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.15.1**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.17.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -63,8 +63,8 @@ render partial data as if it were complete.
 - **The password login is blocked at M1's edge** (HTTP 403 Cloudflare page
   since 2026-10-27; docs/api.md Trap 7). The login that works is the browser
   session, and `auth login --browser` is its primary route: a Chrome window
-  opens at dashboard.m1.com, the owner signs in on M1's own page, and `m1f`
-  reads the Auth0 session out of it (`pk-cli-browser`; the capture is
+  opens at dashboard.m1.com, the owner signs in on M1's own page if it asks, and
+  `m1f` reads the Auth0 session out of it (`pk-cli-browser`; the capture is
   `auth0::browser_capture`). The fallback without Chrome is `auth login
   --browser-session --stdin` with the session copied out of DevTools. Both go
   through one reader (`auth0::parse_browser_capture` / `parse_captured`, which
@@ -73,10 +73,37 @@ render partial data as if it were complete.
   sign-in window on its own initiative, never captures, pastes or exchanges a
   live session or token itself, and never "retries" the password login to
   see whether the 403 cleared — each attempt is a lockout risk.
+- **The window's profile is kept between sign-ins**, so M1 remembers the device
+  and a re-login often needs no input (`--fresh-profile` opts out for one run). A
+  retired refresh token must never stay where the next window reads or presents
+  it, because Auth0 answers that reuse by revoking the whole family. So
+  `auth0::CAPTURE_EXPRESSION` takes the session out of `localStorage` as it reads,
+  and `commands::auth::confirm_candidate` lets the tab close only on an unexpired
+  session M1 accepts, and never renews a candidate. Keep both gates: without them
+  a re-login reads the old session, closes the window and fails, run after run.
+  The DevTools snippet stays read-only: it runs in the owner's own browser.
+- **It is a full Chrome profile** (history with full URLs, HTTP cache, site
+  storage), `0700` its only protection beyond Chrome's cookie encryption, which on
+  Linux with no desktop keyring uses a fixed, publicly known key. It outlives a
+  failed sign-in, so every failure from the window on says so: they all pass through
+  `through_the_window` into `failed_sign_in`, so add a new step there. `auth status`
+  does not report it: cli-common has no public way to ask whether one exists.
+- **A read that cannot decide ends the wait.** In `confirm_candidate` a 429 or a
+  5xx is `Confirm::Fail`, whatever its body (`client::read_reply` reads the status
+  before the HTML), and only `viewer.isAuthenticated: true` is `Ready`. `--browser
+  --no-verify` skips that read, so a kept profile refuses it.
+- **`auth logout` removes the kept profile, and no test may reach the real one.**
+  Its removal goes through the `logout_browser` seam: the binary binds
+  `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir
+  (`pk-cli-browser`'s `test-util`, a dev-dependency only). It is the logout's last
+  step, so a refusal (`ProfileInUse`, `Profile`; exit 1) leaves the tokens cleared,
+  and its error says so and how to finish (`logout_refused`).
 - **Tests never launch Chrome.** The browser capture is tested offline: the
   capture definition validates, its host rule and expression match what the
-  reader takes, and the synthetic fixture goes through the reader. The flag
-  conflicts are clap's, so the CLI tests exit 2 before any keychain read.
+  reader takes, the synthetic fixture goes through the reader, and the confirm
+  hook runs on captures built by hand. The in-use test holds the profile with a
+  shell-script stand-in for Chrome. The flag conflicts are clap's, so the CLI
+  tests exit 2 before any keychain read.
 - **MFA is a replay, not a resume.** M1 has no challenge object and no resume
   mutation: `outcome` is a plain object. When a code is required, M1 says so
   through the `error` scalar, and the client re-sends the **same `Authenticate`
@@ -234,4 +261,6 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `M1F_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session.
+never carries a session, and it does not move the kept browser profile: under it
+`auth logout` leaves that profile in place and says so (`keychain_redirected`), and
+`--browser` uses a scratch one.

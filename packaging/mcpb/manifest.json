@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "m1f",
   "display_name": "M1 (m1f)",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Read-only access to your own M1 net worth, positions, activity, tax documents and realized gains, through the open-source m1f CLI.",
   "long_description": "Ask Claude about your M1 accounts: net worth and what you hold, what happened over a period (trades, deposits, dividends), which statements and tax forms exist, and a year's realized gains. Four read-only tools, m1_portfolio, m1_activity, m1_documents and m1_realized_gains; nothing can trade, transfer or change your account. The extension asks for no password: M1 sign-in is through a browser, so first install the m1f CLI and run `m1f auth login --browser` in a terminal. That stores the session in your OS keychain, and the bundled m1f reads it from there and refreshes it in place. On macOS the first call asks for keychain access; choose Always Allow. Unofficial; not affiliated with M1 Holdings.",
   "author": {
