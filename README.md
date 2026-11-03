@@ -65,12 +65,12 @@ on macOS and under `$XDG_DATA_HOME` (or `~/.local/share`) on Linux, owner-only
 --browser --fresh-profile` signs in once through a scratch profile, deleted
 afterwards, and leaves the kept one alone.
 
-The trade is more than cookies. `m1f` takes the session's tokens out of the
-profile as it reads them, but it is a full Chrome profile, so it also keeps
-browsing history with full URLs, query strings included, the HTTP cache and site
-storage, for whatever you open in that window. Chrome's cookie encryption does
-not cover those: the directory's `0700` mode is their only protection, and
-ordinary backups usually include the directory ([`SECURITY.md`](SECURITY.md)). On
+The trade is more than cookies. It is a full Chrome profile, so it also keeps a
+copy of the session's access and refresh tokens, browsing history with full URLs,
+query strings included, the HTTP cache and site storage, for whatever you open in
+that window. Chrome's cookie encryption does not cover those: the directory's `0700`
+mode is their only protection, and ordinary backups usually include the directory
+([`SECURITY.md`](SECURITY.md)). On
 Linux with no desktop keyring Chrome encrypts the cookies with a fixed, publicly
 known key, so there the session cookie has only `0700` too.
 
@@ -80,9 +80,10 @@ the check, a keychain write that fails. Those can leave a live session in it.
 `--browser --no-verify` needs `--fresh-profile`, since only M1's answer tells a
 session left in a kept profile from a live one. `m1f auth status` reads only the
 keychain and config, so it does not show the profile. `m1f auth logout` removes it
-and clears the stored session with it. While a sign-in or a Chrome window is using
-the profile, logout clears the session, exits 1 and says only the profile remains;
-close the window and run it again.
+and clears the stored session with it. It attempts every step even after one fails,
+then says what is cleared and what remains, and exits with the first failure's code.
+While a sign-in or a Chrome window is using the profile, it clears the session,
+exits 1 and says only the profile remains; close the window and run it again.
 [`docs/api.md`](docs/api.md#the-browser-capture-auth-login---browser) records
 exactly what is read and from which host, and
 [Trap 7](docs/api.md#trap-7-the-password-login-answers-a-cloudflare-403) the

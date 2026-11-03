@@ -81,9 +81,9 @@ a cookie or a token for M1.
 
 `M1F_KEYCHAIN_SERVICE` renames the keychain service read, for tests and
 for checking the error paths against an empty service. It carries no
-secret. It does not move the kept browser profile, so while it names another
-service `auth logout` leaves that profile in place and says so, and `--browser`
-signs in through a scratch profile.
+secret. It moves neither the kept browser profile nor the config, so while it names
+another service `auth logout` leaves both in place and says so, a sign-in writes no
+config, and `--browser` signs in through a scratch profile.
 
 ## The kept browser profile
 
@@ -109,17 +109,18 @@ does not cover the history, the HTTP cache or site storage, so `0700` is their o
 protection. The directory sits where ordinary user-level backups usually look, so
 exclude it from any backup you don't want holding this.
 
-**The session's tokens are taken out of it.** auth0-spa-js keeps the access and
-refresh tokens in `localStorage`, which Chrome does not encrypt. The capture
-removes those entries as it reads them, so after a completed sign-in the profile
-holds no copy, and a refresh token that `m1f` later rotates is not left where the
-next window would present it and revoke the session. Two cases can still leave
-them there, until the next sign-in or `auth logout`: a sign-in that ended before
-the read, and a Chrome stopped before the removal reached the disk. The capture
-then refuses anything expired or that M1 does not accept, and `m1f` never renews
-from the window. A throttle or an outage during that check ends the wait with an
-error, and takes nothing. `--browser --no-verify`, which would skip the check, is
-refused unless `--fresh-profile` is there too.
+**The session's tokens stay in it.** auth0-spa-js keeps the access and refresh
+tokens in `localStorage`, which Chrome does not encrypt, so `0700` is all that
+protects that copy of a live refresh token. The capture only reads: a removal from
+the page may not reach the disk before Chrome stops, and the evaluation can run more
+than once. Once `m1f` renews, the copy is retired, and the next window can present
+it, which Auth0 answers by revoking the whole family, the session in the keychain
+included; you then sign in again. cli-common has no way yet to clear site storage
+around a launch. `--fresh-profile` avoids this for one run, and `auth logout`
+removes the copy. The capture refuses anything expired or that M1 does not accept,
+and `m1f` never renews from the window. A throttle or an outage during that check
+ends the wait with an error, and takes nothing. `--browser --no-verify`, which would
+skip the check, is refused unless `--fresh-profile` is there too.
 
 **The profile outlives a failed sign-in.** However a sign-in fails once its window
 has opened (a timeout, a closed window, Ctrl-C, M1 throttled or down during the
@@ -131,10 +132,13 @@ only the keychain and config, so it does not show the profile.
 
 `m1f auth logout` clears the stored tokens and removes the kept browser profile,
 and only that directory, as its last step; `--forget` also clears the config
-identity. There is no way to remove the profile alone. It refuses while a sign-in
-or a Chrome is using the profile, or when the path is a symlink or another user's.
-A refusal is exit 1, and its message says what is already cleared, that only the
-profile remains and how to finish.
+identity. There is no way to remove the profile alone. Every step is attempted even
+after one fails, and a config that cannot be parsed stops none of them, so a keychain
+or config failure does not leave the profile behind.
+If one fails, the error says what is cleared and what remains, and how to finish,
+with the first failure's exit code. The profile's removal refuses while a sign-in or
+a Chrome is using it, or when the path is a symlink or another user's; on its own
+that is exit 1, with only the profile remaining.
 
 That removes this machine's copies of the credentials; it does not invalidate
 the session server-side. To do that, change your M1 password and sign out other

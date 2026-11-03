@@ -74,14 +74,14 @@ render partial data as if it were complete.
   live session or token itself, and never "retries" the password login to
   see whether the 403 cleared — each attempt is a lockout risk.
 - **The window's profile is kept between sign-ins**, so M1 remembers the device
-  and a re-login often needs no input (`--fresh-profile` opts out for one run). A
-  retired refresh token must never stay where the next window reads or presents
-  it, because Auth0 answers that reuse by revoking the whole family. So
-  `auth0::CAPTURE_EXPRESSION` takes the session out of `localStorage` as it reads,
-  and `commands::auth::confirm_candidate` lets the tab close only on an unexpired
-  session M1 accepts, and never renews a candidate. Keep both gates: without them
-  a re-login reads the old session, closes the window and fails, run after run.
-  The DevTools snippet stays read-only: it runs in the owner's own browser.
+  and a re-login often needs no input (`--fresh-profile` opts out for one run). The
+  session's tokens stay in it, and a retired refresh token can get the whole family
+  revoked. So `commands::auth::confirm_candidate` lets the tab close only on an
+  unexpired session M1 accepts, and never renews a candidate. Keep that gate: without
+  it a re-login reads the old session, closes the window and fails, run after run.
+  `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read. Do not add a removal
+  to the expression: it may not reach the disk, and the evaluation can run more than
+  once. Clearing site storage around a launch belongs to cli-common.
 - **It is a full Chrome profile** (history with full URLs, HTTP cache, site
   storage), `0700` its only protection beyond Chrome's cookie encryption, which on
   Linux with no desktop keyring uses a fixed, publicly known key. It outlives a
@@ -93,11 +93,14 @@ render partial data as if it were complete.
   before the HTML), and only `viewer.isAuthenticated: true` is `Ready`. `--browser
   --no-verify` skips that read, so a kept profile refuses it.
 - **`auth logout` removes the kept profile, and no test may reach the real one.**
-  Its removal goes through the `logout_browser` seam: the binary binds
+  Its removal goes through the `run_logout` seam: the binary binds
   `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir
-  (`pk-cli-browser`'s `test-util`, a dev-dependency only). It is the logout's last
-  step, so a refusal (`ProfileInUse`, `Profile`; exit 1) leaves the tokens cleared,
-  and its error says so and how to finish (`logout_refused`).
+  (`pk-cli-browser`'s `test-util`, a dev-dependency only). Every step of a logout is
+  attempted even after one fails, the profile last, so a keychain or config failure
+  does not leave it behind, and it loads no config (`reads_config`), so a file that
+  cannot be parsed stops nothing. The error is built from the inner messages, says
+  what is cleared and what remains, and keeps the first failure's exit code
+  (`LogoutSteps::report`).
 - **Tests never launch Chrome.** The browser capture is tested offline: the
   capture definition validates, its host rule and expression match what the
   reader takes, the synthetic fixture goes through the reader, and the confirm
@@ -261,6 +264,7 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `M1F_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session, and it does not move the kept browser profile: under it
-`auth logout` leaves that profile in place and says so (`keychain_redirected`), and
-`--browser` uses a scratch one.
+never carries a session, and it moves neither the kept browser profile nor the
+config: under it `auth logout` leaves both in place and says so
+(`keychain_redirected`), a sign-in writes no config, and `--browser` uses a scratch
+profile.

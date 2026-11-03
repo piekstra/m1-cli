@@ -362,6 +362,32 @@ fn a_browser_login_refuses_other_sources_and_the_password_flags() {
     }
 }
 
+/// A config that cannot be parsed stops only what reads it. The read fails before
+/// the keychain, and HOME and the keychain service point at nothing in case that
+/// changes.
+#[test]
+fn a_broken_config_stops_only_the_commands_that_read_it() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.json");
+    std::fs::write(&config, "not json").unwrap();
+    m1f()
+        .env("HOME", home.path())
+        .arg("--config")
+        .arg(&config)
+        .args(["config", "path"])
+        .assert()
+        .success();
+    m1f()
+        .env("HOME", home.path())
+        .env("M1F_KEYCHAIN_SERVICE", "m1f-test-empty-service")
+        .arg("--config")
+        .arg(&config)
+        .args(["auth", "status"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("parsing"));
+}
+
 /// `--no-verify` cannot vouch for what a kept profile may still hold: exit 2 before
 /// the keychain or Chrome. HOME and Chrome point at nothing in case that changes.
 #[cfg(unix)]
@@ -428,13 +454,30 @@ fn the_help_says_what_happens_to_the_kept_profile() {
         .output()
         .expect("runs");
     let help = String::from_utf8_lossy(&logout.stdout);
-    for needle in ["kept browser profile", "exits 1", "already cleared"] {
+    for needle in [
+        "kept browser profile",
+        "first failure's code",
+        "already cleared",
+    ] {
         assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
     }
+    // The command list shows the summary, on one line; the detail is above.
+    let auth = m1f().args(["auth", "--help"]).output().expect("runs");
+    let help = String::from_utf8_lossy(&auth.stdout);
+    let row = help
+        .lines()
+        .find(|l| l.trim_start().starts_with("logout"))
+        .expect("a logout row");
+    assert!(
+        row.trim_end()
+            .ends_with("Clear the session and remove the kept browser profile"),
+        "{row}"
+    );
+    assert!(!help.contains("first failure's code"), "{help}");
 }
 
-/// The capture takes the session out of the profile `m1f` keeps. The DevTools
-/// snippet runs in the owner's own browser, so it must never do the same.
+/// The DevTools snippet runs in the owner's own browser, so it must never change
+/// what it reads.
 #[test]
 fn the_devtools_snippet_stays_read_only() {
     let login = m1f()

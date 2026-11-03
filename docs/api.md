@@ -152,15 +152,14 @@ which says where it renews), not which route handed it over.
 tokens, and answer the reuse of a retired one by revoking the whole family. A
 session copied out of a browser that stays open is held twice: whichever of
 the browser or `m1f` renews second presents a retired token, and both lose the
-session. The browser capture takes the session out of `localStorage` as it reads
-it and closes the dashboard tab, before the web app can renew, then quits Chrome.
+session. The browser capture closes the dashboard tab as soon as it reads the
+session, before the web app can renew, then quits Chrome.
 The DevTools route relies on the owner: a private window, closed after copying
 **without signing out** (signing out may revoke the session `m1f` now holds).
 
-The profile `--browser` keeps would be a second holder if the session stayed in
-it: its refresh token is retired at `m1f`'s next renewal, and the next window
-would read it or present it, which is the reuse that revokes the family. So it
-keeps the cookies and not the tokens (below).
+The profile `--browser` keeps is a second holder, because the session stays in its
+`localStorage`: its refresh token is retired at `m1f`'s next renewal, and the next
+window can present it, which is the reuse that revokes the family (below).
 
 #### The browser capture (`auth login --browser`)
 
@@ -177,7 +176,7 @@ The mechanism is cli-common's `pk-cli-browser` (its DESIGN.md §2.2); what
 | Then | Every dashboard tab is closed at once and Chrome is stopped. The value goes through the same reader, check and store as a piped session. |
 
 ```js
-(() => { const keys = Object.keys(localStorage).filter(k => k.startsWith('@@auth0spajs@@::')); const k = keys.find(k => k.includes('lens.m1finance.com')); const v = k && localStorage[k]; if (!v || !v.includes('access_token')) return null; keys.forEach(k => localStorage.removeItem(k)); return v; })()
+(() => { const k = Object.keys(localStorage).find(k => k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && localStorage[k]; return v && v.includes('access_token') ? v : null; })()
 ```
 
 The value it returns is the one the DevTools snippet copies: the
@@ -199,39 +198,36 @@ stays when the window closes, after a failed sign-in too (cli-common's DESIGN.md
 later sign-in should often need no input. `--fresh-profile` uses a scratch profile
 for one run instead. `auth logout` removes the kept one as its last step; a
 refusal (a sign-in or a Chrome using it, a symlink, another user's) is exit 1,
-saying what is already cleared and how to finish. SECURITY.md lists what the
-profile holds.
+saying what is already cleared and how to finish. Each step of a logout is attempted
+even after one fails (`commands::auth::run_logout`), and the exit code is the first
+failure's. SECURITY.md lists what the profile holds.
 
-**The cookies stay; the tokens do not.** A kept profile would otherwise start
-each window with the last sign-in's cache entry: an access token that has often
-expired and a refresh token `m1f` may have retired. The capture would read that
-entry the moment the page opens, or auth0-spa-js would present the token and Auth0
-would revoke the family, the session `m1f` holds included. Two gates stop it:
+**The tokens stay too.** A kept profile starts each window with the last sign-in's
+cache entry: an access token that has often expired and a refresh token `m1f` may
+have retired. The expression only reads: a removal from the page may not reach the
+disk before Chrome stops, and the evaluation can run more than once. So:
 
-1. **The read takes the entries out.** The expression removes every
-   `@@auth0spajs@@::` key as it answers, so the page starts the next window as it
-   does for any visitor and signs in from Auth0's cookie where it can.
-2. **The confirm hook judges what it read.** An entry can still be there: from a
-   sign-in that ended before the read, or a Chrome stopped before the removal
-   reached the disk. So the tab stays open on an expired session, or one M1
-   refuses, until a new sign-in replaces it. The hook never renews: only a copied
-   session is renewed at login, and a captured refresh token is never presented.
-   An unexpired token M1 accepts has not been rotated, because `m1f` renews only
-   after M1 refuses the access token. A refused token is remembered for the run
-   and not sent again, so a tab on a dead session costs one read rather than one
-   per poll. A read that cannot decide ends the wait with an error and takes
-   nothing: a 429 or a 5xx whatever its body, or an answer with no verdict in it. An
-   HTML page on any other status counts as a refusal, since it may be either a bot
-   check or a dead session; the tab stays open and that token is not sent again.
-   `--browser --no-verify` would skip this read, so it needs `--fresh-profile`,
-   where nothing older can be waiting.
+1. **The confirm hook judges what it read.** The tab stays open on an expired
+   session, or one M1 refuses, until a new sign-in replaces it. The hook never
+   renews: only a copied session is renewed at login, and a captured refresh token
+   is never presented. An unexpired token M1 accepts has not been rotated, because
+   `m1f` renews only after M1 refuses the access token. A refused token is
+   remembered for the run and not sent again, so a tab on a dead session costs one
+   read rather than one per poll. A read that cannot decide ends the wait with an
+   error and takes nothing: a 429 or a 5xx whatever its body, or an answer with no
+   verdict in it. An HTML page on any other status counts as a refusal, since it may
+   be either a bot check or a dead session; the tab stays open and that token is not
+   sent again. `--browser --no-verify` would skip this read, so it needs
+   `--fresh-profile`, where nothing older can be waiting.
+2. **The page can still present the retired token.** When the window opens on an
+   expired access token, auth0-spa-js may present its refresh token, and if that one
+   is retired Auth0 revokes the family, the session `m1f` holds included. The owner
+   then signs in again. cli-common has no way yet to clear site storage around a
+   launch. `--fresh-profile` avoids it for one run, and `auth logout` removes the
+   copy.
 
 A confirmed capture is read twice: once by the hook, to decide whether the tab
 closes, and once after it, to decide whether anything is stored.
-
-A read that the rest of the capture then loses (Chrome dying between the read and
-the answer, M1 down when the hook asks) has already emptied the entry, so that
-sign-in is not retried from it; the next `--browser` signs in from Auth0's cookie.
 
 ### 3. Document downloads — two hosts, both pre-signed
 
@@ -566,7 +562,7 @@ Short, and none of it blocks the tool:
 | `x-*` header necessity | Reads worked with them; their *absence* was not tested against Cloudflare. |
 | Auth0 session end to end | Read from the bundle and the tenant's public metadata, not exercised: no owner session has been captured since Trap 7. The first `auth login --browser` (or `--browser-session`) confirms that `lens.m1.com` takes the Auth0 bearer outside the browser (the bundle says it does). |
 | The browser capture live | `auth login --browser` is tested offline only: the expression against the reader's prefix and audience, the host rule, the fixture through the reader. Whether the dashboard's own entry answers the expression the way the synthetic fixture does is confirmed by the owner's first run. |
-| The kept profile live | Tested offline only. How often a second sign-in needs no input, that the dashboard signs back in from Auth0's cookie with its `localStorage` entries gone, and that Chrome writes the removal out before it stops are confirmed by the owner's first re-login. |
+| The kept profile live | Tested offline only. How often a second sign-in needs no input, and what the dashboard does with an old `localStorage` entry when the window opens (whether it presents a retired refresh token), are confirmed by the owner's first re-login. |
 | Auth0 token lifetime and rotation | The access token's lifetime and whether the tenant rotates refresh tokens are unobserved; `m1f` keeps a rotated token when one comes back and the old one when none does. |
 | Auth0 refresh outside a browser | The token endpoint advertises `none` auth for public clients; whether Cloudflare or Auth0's origin rules let a non-browser renewal through is unobserved. A refusal is exit 3 naming the recapture; an HTML answer exit 5. |
 | Net worth by account | Whether the accounts sum to M1's Invest figure to the cent is unobserved; a difference becomes its own row, and so does a `0.00` remainder beside an unpriced account. |

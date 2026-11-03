@@ -48,12 +48,13 @@
 //! normally rotates them: each renewal returns a new one and retires the old.
 //! Two holders of one refresh token therefore race, and Auth0 answers reuse of
 //! a retired token by revoking the whole family. So the CLI must end up the
-//! only holder: `auth login --browser` takes the session out of `localStorage`
-//! as it reads it ([`CAPTURE_EXPRESSION`]), closes the dashboard tab and quits
-//! Chrome, so the profile it keeps holds cookies and no tokens, and the DevTools
-//! steps have the owner sign in in a private window and close it after copying.
-//! Whether M1's tenant rotates, and how long its access tokens live, has not been
-//! observed (docs/api.md, "What is still unverified").
+//! only holder: `auth login --browser` closes the dashboard tab the moment the
+//! session is read and then quits Chrome, and the DevTools steps have the owner
+//! sign in in a private window and close it after copying. The profile `--browser`
+//! keeps still holds the page's copy, which goes stale at `m1f`'s next renewal
+//! (docs/api.md, "The kept profile"). Whether M1's tenant rotates, and how long
+//! its access tokens live, has not been observed (docs/api.md, "What is still
+//! unverified").
 
 use pk_cli_browser::{Capture, HostRule};
 use pk_cli_core::CliError;
@@ -98,19 +99,14 @@ pub const DASHBOARD_HOST: &str = "dashboard.m1.com";
 /// takes both ([`parse_browser_capture`], [`parse_captured`]). docs/api.md
 /// quotes it verbatim.
 ///
-/// It takes every auth0-spa-js entry out of `localStorage` as it reads, because
-/// the profile outlives the window. A refresh token left there goes stale at
-/// `m1f`'s next renewal: the next window would hand it over, or auth0-spa-js
-/// would present it, and Auth0 answers that reuse by revoking the whole family,
-/// the session `m1f` holds included. So the kept profile keeps the cookies and
-/// not the tokens, and the page starts as it does for any visitor, signing in
-/// from the cookies where it can. The DevTools snippet stays read-only: it runs
-/// in the owner's own browser.
-pub const CAPTURE_EXPRESSION: &str = "(() => { const keys = Object.keys(localStorage).filter(k => \
-     k.startsWith('@@auth0spajs@@::')); const k = keys.find(k => \
-     k.includes('lens.m1finance.com')); const v = k && localStorage[k]; if (!v || \
-     !v.includes('access_token')) return null; keys.forEach(k => \
-     localStorage.removeItem(k)); return v; })()";
+/// It only reads, though the profile outlives the window. A removal from here
+/// is no guarantee: it may not reach the disk before Chrome stops, and the
+/// evaluation runs at least once, so it could also lose a session the capture
+/// never took. Whether what it reads is worth taking is the confirm hook's call
+/// (`commands::auth::confirm_candidate`).
+pub const CAPTURE_EXPRESSION: &str = "(() => { const k = Object.keys(localStorage).find(k => \
+     k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && \
+     localStorage[k]; return v && v.includes('access_token') ? v : null; })()";
 
 /// The `auth login --browser` capture: [`CAPTURE_EXPRESSION`], read only from
 /// pages on exactly [`DASHBOARD_HOST`].
@@ -700,20 +696,15 @@ pub(crate) mod tests {
         for needle in [
             format!("k.startsWith('{CACHE_KEY_PREFIX}')"),
             format!("k.includes('{audience_host}')"),
-            "!v.includes('access_token')) return null".to_string(),
-            // The kept profile must not hold the token family afterwards.
-            format!(
-                "keys = Object.keys(localStorage).filter(k => k.startsWith('{CACHE_KEY_PREFIX}'))"
-            ),
-            "keys.forEach(k => localStorage.removeItem(k))".to_string(),
+            "v.includes('access_token') ? v : null".to_string(),
         ] {
             assert!(CAPTURE_EXPRESSION.contains(&needle), "{needle}");
         }
-        // Nothing is removed before the session is known to be there.
-        assert!(
-            CAPTURE_EXPRESSION.find("return null").unwrap()
-                < CAPTURE_EXPRESSION.find("removeItem").unwrap()
-        );
+        // It only reads: a removal may not reach the disk, and the evaluation
+        // can run more than once.
+        for write in ["removeItem", "setItem", ".clear("] {
+            assert!(!CAPTURE_EXPRESSION.contains(write), "{write}");
+        }
 
         // What the expression hands back is the entry's stored string, here
         // the synthetic fixture: it carries the readiness signal, and the

@@ -135,10 +135,10 @@ enum AuthCmd {
     ///
     /// The kept profile (owner-only, on disk) lets M1 remember this device, so
     /// a later sign-in often needs no input: the window opens, the session is
-    /// read and the window closes. m1f takes the session out of it, but it is a
-    /// full Chrome profile: M1's cookies, browsing history with full URLs, the
-    /// HTTP cache and site storage stay, after a failed sign-in too, until
-    /// `m1f auth logout` removes it. --fresh-profile signs in through a scratch
+    /// read and the window closes. It is a full Chrome profile: M1's cookies, the
+    /// session's tokens, browsing history with full URLs, the HTTP cache and site
+    /// storage stay, after a failed sign-in too, until `m1f auth logout` removes
+    /// it. --fresh-profile signs in through a scratch
     /// profile instead, removed when the window closes, and leaves the kept one
     /// alone.
     ///
@@ -171,9 +171,12 @@ enum AuthCmd {
     Login(commands::auth::LoginCmdArgs),
     /// Report credential/session state (auth-status/v1).
     Status,
-    /// Clear the session, then remove the kept browser profile; --forget also
-    /// removes stored tokens and identity. While Chrome is using the profile this
-    /// exits 1 with the rest already cleared and only the profile left.
+    /// Clear the session and remove the kept browser profile.
+    ///
+    /// --forget also removes the stored identity. Every step is attempted even
+    /// after one fails; then this says what is cleared and what remains, and exits
+    /// with the first failure's code. While Chrome is using the kept profile that
+    /// is exit 1, with the rest already cleared and only the profile left.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -276,6 +279,20 @@ fn main() {
     }
 }
 
+/// Whether a command uses the loaded config, so that one which cannot be parsed
+/// stops nothing else. `auth logout` above all: it runs every step regardless.
+/// `config` loads the file itself, for the subcommands that read it.
+fn reads_config(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Auth(AuthCmd::Logout(_))
+            | Command::Config(_)
+            | Command::SelfUpdate(_)
+            | Command::Completions { .. }
+            | Command::Info
+    )
+}
+
 fn run(cli: &Cli) -> Result<(), CliError> {
     let store = ConfigStore::new(BIN).with_override(cli.config.clone());
     // `M1F_KEYCHAIN_SERVICE` exists for the test suite and for dogfooding
@@ -284,13 +301,18 @@ fn run(cli: &Cli) -> Result<(), CliError> {
     // "not logged in", where the real service would open the user's actual
     // session (and, from the ad-hoc-signed binary `cargo test` builds, raise
     // a macOS keychain prompt). It renames which entry is read; it never
-    // carries a session. It does not move the kept browser profile, so under it
-    // `auth logout` leaves that profile alone and `--browser` uses a scratch one.
+    // carries a session. It moves neither the kept browser profile nor the config,
+    // so under it `auth logout` leaves both alone, a sign-in writes no config, and
+    // `--browser` uses a scratch profile.
     let creds = match std::env::var("M1F_KEYCHAIN_SERVICE") {
         Ok(service) if !service.is_empty() => CredentialStore::new(service),
         _ => CredentialStore::for_binary(BIN),
     };
-    let cfg: config::Config = store.load()?;
+    let cfg: config::Config = if reads_config(&cli.command) {
+        store.load()?
+    } else {
+        config::Config::default()
+    };
 
     if let Command::Mcp(args) = &cli.command {
         return pk_cli_mcp::run(
@@ -457,6 +479,21 @@ mod tests {
             Command::Auth(AuthCmd::Login(args)) => Ok(args),
             other => panic!("parsed as {other:?}"),
         }
+    }
+
+    /// A logout must run with a config it cannot parse.
+    #[test]
+    fn logout_does_not_read_the_config() {
+        let reads = |args: &[&str]| {
+            let cli = Cli::try_parse_from(["m1f"].iter().chain(args)).unwrap();
+            reads_config(&cli.command)
+        };
+        assert!(!reads(&["auth", "logout"]));
+        assert!(!reads(&["auth", "logout", "--forget"]));
+        assert!(!reads(&["config", "path"]));
+        assert!(reads(&["auth", "status"]));
+        assert!(reads(&["auth", "login", "--browser"]));
+        assert!(reads(&["accounts", "list"]));
     }
 
     /// `--browser` is the browser-session login, alone or beside
