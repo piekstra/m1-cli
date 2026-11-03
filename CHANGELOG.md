@@ -38,7 +38,12 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
   now quits over its debug port, so a fresh one reaches the disk.
 - The capture now takes a session only once it has not expired and M1 accepts it
   (`viewer.isAuthenticated`), and a session from the window is never renewed at
-  login. A token M1 refused is not sent again. A throttle or an outage during that
-  check ends the wait with an error.
+  login. That is its one read: it goes straight to the keychain afterwards. A token M1
+  refused is not sent again, and a timeout says what M1 answered, so a Cloudflare block
+  names itself. A throttle or an outage during that check ends the wait with an error.
+- Before going back to an older release, run `m1f auth logout`. An older release does
+  not know the kept profile and its logout leaves it behind; otherwise delete
+  `~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under
+  `$XDG_DATA_HOME` or `~/.local/share`) by hand afterwards.
 - A 429 or a 5xx with an HTML body is now exit 5, like any other 429 or 5xx, and no
   longer reads as a refused session (exit 3) on any command.

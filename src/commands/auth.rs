@@ -255,10 +255,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
 
 /// The one check and the one keychain item both routes share.
 fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result<(), CliError> {
-    if !args.base.no_verify {
-        verify(ctx, bundle)?;
-    }
-    ctx.store_login(bundle)?;
+    prove_then_store(args, bundle, |b| verify(ctx, b), |b| ctx.store_login(b))?;
     ctx.clear_pending()?;
     if !ctx.common.quiet {
         let renewal = if bundle.refresh_token.is_some() {
@@ -290,6 +287,21 @@ fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result
     let status = status_dto(ctx, Some(bundle), ctx.cfg.username.as_deref());
     status.emit(ctx.common.json);
     Ok(())
+}
+
+/// A piped session gets its read here. A session from the window has had its read:
+/// the confirm hook's. By now Chrome has stopped and site storage is gone, so another
+/// read could only throw a finished sign-in away on a throttle or a dropped connection.
+fn prove_then_store(
+    args: &LoginCmdArgs,
+    bundle: &TokenBundle,
+    read: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
+    store: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    if !args.browser.browser && !args.base.no_verify {
+        read(bundle)?;
+    }
+    store(bundle)
 }
 
 /// Persist the identity up front so a follow-up `--code` run and `auth status`
@@ -364,7 +376,7 @@ fn browser_launch(scratch: bool, quiet: bool, hint: String) -> Launch {
 
 /// A browser sign-in from the window on, with every way it can fail in one
 /// place, so a new one cannot miss [`failed_sign_in`]: the window's own ending,
-/// the confirm hook's, the read after it and the keychain write.
+/// the confirm hook's and the keychain write.
 ///
 /// Only four failures skip the note, because they end the sign-in before this
 /// Chrome uses the profile: no Chrome, a malformed launch, and a profile refused
@@ -454,16 +466,16 @@ fn reworded(error: CliError, say: impl FnOnce(String) -> String) -> CliError {
 ///
 /// A session is never renewed here: the page that holds it can renew it too, and
 /// Auth0 answers the second use of a refresh token by revoking the whole family.
-/// A token M1 refused is remembered and not sent again, so a tab sitting on a dead
-/// session costs one read rather than one per poll. A read that cannot decide ends
-/// the wait and takes nothing: a throttle, M1 down, or an answer with no verdict in
-/// it.
+/// A token M1 refused is remembered with what M1 said and not sent again, so a tab
+/// sitting on a dead session costs one read rather than one per poll, and the timeout
+/// names the cause: a Cloudflare block reads as one, not as a dead session. A read
+/// that cannot decide ends the wait and takes nothing: a throttle, M1 down, or an
+/// answer with no verdict in it.
 fn confirm_candidate(
     candidate: &Captured,
-    refused: &Mutex<Option<Secret>>,
+    refused: &Mutex<Option<Refused>>,
     prove: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
 ) -> Confirm {
-    const DEAD: &str = "M1 refused the session this window holds, and no new sign-in has finished";
     let Some(value) = candidate.value() else {
         return Confirm::NotYet("the page held no session".into());
     };
@@ -477,20 +489,29 @@ fn confirm_candidate(
         );
     }
     let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
-    if refused
+    if let Some(earlier) = refused
         .as_ref()
-        .is_some_and(|token| token.expose() == bundle.access_token)
+        .filter(|earlier| earlier.token.expose() == bundle.access_token)
     {
-        return Confirm::NotYet(DEAD.into());
+        return Confirm::NotYet(earlier.reason.clone());
     }
     match prove(&bundle) {
         Ok(()) => Confirm::Ready,
-        Err(CliError::Auth(_)) => {
-            *refused = Some(Secret::new(bundle.access_token.clone()));
-            Confirm::NotYet(DEAD.into())
+        Err(CliError::Auth(reason)) => {
+            *refused = Some(Refused {
+                token: Secret::new(bundle.access_token.clone()),
+                reason: reason.clone(),
+            });
+            Confirm::NotYet(reason)
         }
         Err(e) => Confirm::Fail(e),
     }
+}
+
+/// A token M1 refused, and what it said.
+struct Refused {
+    token: Secret,
+    reason: String,
 }
 
 /// No Chrome: the fallback is the DevTools copy, in any browser.
@@ -1225,7 +1246,7 @@ mod tests {
                 prove(Err(CliError::Auth("dummy refusal".into())))
             });
             match answer {
-                Confirm::NotYet(reason) => assert!(reason.contains("refused"), "{reason}"),
+                Confirm::NotYet(reason) => assert_eq!(reason, "dummy refusal"),
                 other => panic!("must keep waiting: {other:?}"),
             }
         }
@@ -1235,6 +1256,95 @@ mod tests {
         let answer = confirm_candidate(&held(&renewed), &refused, |_| prove(Ok(())));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(reads.get(), 2);
+    }
+
+    /// A Cloudflare block on the hook's read names itself, on every poll, so the
+    /// timeout does not call a signed-in tab a dead session.
+    #[test]
+    fn a_403_html_answer_keeps_its_reason() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        let refused = Mutex::new(None);
+        let token = live_token();
+        for _ in 0..2 {
+            let answer = confirm_candidate(&held(&token), &refused, |_| {
+                crate::client::tests::read_answer(403, PAGE).map(|_| ())
+            });
+            match answer {
+                Confirm::NotYet(reason) => {
+                    assert!(reason.contains("HTTP 403"), "{reason}");
+                    assert!(reason.contains("Cloudflare bot check"), "{reason}");
+                }
+                other => panic!("must keep waiting: {other:?}"),
+            }
+        }
+    }
+
+    fn login_args(flags: &[&str]) -> LoginCmdArgs {
+        let mut argv = vec!["test"];
+        argv.extend_from_slice(flags);
+        <LoginCmdArgs as clap::Args>::augment_args(clap::Command::new("test"))
+            .try_get_matches_from(argv)
+            .and_then(|m| <LoginCmdArgs as clap::FromArgMatches>::from_arg_matches(&m))
+            .unwrap()
+    }
+
+    /// A session the hook accepted goes straight to the keychain: the read that
+    /// would have failed here is not made, so a throttle loses no finished sign-in.
+    /// `--no-verify` skips the read on either route.
+    #[test]
+    fn a_session_from_the_window_is_stored_with_no_second_read() {
+        let bundle = crate::auth0::parse_browser_capture(
+            &crate::auth0::tests::cache_entry(&live_token()).to_string(),
+        )
+        .unwrap();
+        for flags in [
+            &["--browser"][..],
+            &["--browser", "--no-verify"],
+            &["--browser-session", "--stdin", "--no-verify"],
+        ] {
+            let mut stored = false;
+            prove_then_store(
+                &login_args(flags),
+                &bundle,
+                |_| panic!("{flags:?} must not read"),
+                |_| {
+                    stored = true;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(stored, "{flags:?}");
+        }
+    }
+
+    /// A piped session has had no read yet, so its read still decides.
+    #[test]
+    fn a_piped_session_is_stored_only_if_its_read_succeeds() {
+        let bundle = crate::auth0::parse_browser_capture(
+            &crate::auth0::tests::cache_entry(&live_token()).to_string(),
+        )
+        .unwrap();
+        let args = login_args(&["--browser-session", "--stdin"]);
+        let err = prove_then_store(
+            &args,
+            &bundle,
+            |_| Err(CliError::Upstream("dummy throttle".into())),
+            |_| panic!("a failed read must store nothing"),
+        )
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err}");
+        let mut stored = false;
+        prove_then_store(
+            &args,
+            &bundle,
+            |_| Ok(()),
+            |_| {
+                stored = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(stored);
     }
 
     #[test]

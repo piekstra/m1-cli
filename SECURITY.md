@@ -151,6 +151,11 @@ with the first failure's exit code. The profile's removal refuses while a sign-i
 a Chrome is using it, or when the path is a symlink or another user's; on its own
 that is exit 1, with only the profile remaining.
 
+A release before 0.6.0 does not know the kept profile, and its `auth logout` leaves
+it behind. Run `m1f auth logout` before downgrading, or delete
+`~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under
+`$XDG_DATA_HOME` or `~/.local/share`) by hand afterwards.
+
 That removes this machine's copies of the credentials; it does not invalidate
 the session server-side. To do that, change your M1 password and sign out other
 devices from M1's own web app or mobile app.

@@ -135,8 +135,9 @@ synthetic copy of the shape.
    one is exit 5 naming what was wrong, since that means M1 changed how its
    web app keeps the session.
 3. One read, `viewer { isAuthenticated }`, must answer `true` before anything
-   is stored (`--no-verify` skips it). An access token already expired is
-   renewed first.
+   is stored (`--no-verify` skips it). For `--browser` that read is the confirm
+   hook's, below. For a piped session an access token already expired is renewed
+   first.
 4. On an auth failure, a read renews the session at
    `https://account.m1.com/oauth/token` (`grant_type=refresh_token`,
    `client_id`, `refresh_token`, form-encoded, `Origin:
@@ -185,8 +186,8 @@ The mechanism is cli-common's `pk-cli-browser` (its DESIGN.md §2.2); what
 | Sign-in | The dashboard sends the owner to Auth0's page on `account.m1.com`: password and any emailed code are typed there, never into `m1f`. That host is never read from. |
 | Read from | Pages on exactly `dashboard.m1.com` (`HostRule::exact`): `https` on the default port, matched label by label, so `account.m1.com`, `m1.com` and look-alike hosts are not read. |
 | What is read | This expression, evaluated in those pages (`auth0::CAPTURE_EXPRESSION`): |
-| Ready when | The expression answers with a string (the cache entry for M1's API exists and holds an `access_token`) and the confirm hook accepts it: the reader takes it, its access token has not expired, and one `viewer.isAuthenticated` read answers `true` (no read with `--no-verify`, which a kept profile refuses). A session it cannot decide on (M1 throttled or down) ends the wait; otherwise the capture keeps waiting (up to 10 minutes; Ctrl-C cancels). |
-| Then | Every dashboard tab is closed at once and Chrome is stopped. The value goes through the same reader, check and store as a piped session. |
+| Ready when | The expression answers with a string (the cache entry for M1's API exists and holds an `access_token`) and the confirm hook accepts it: the reader takes it, its access token has not expired, and one `viewer.isAuthenticated` read answers `true` (no read with `--no-verify`; the expiry check still runs). A session it cannot decide on (M1 throttled or down) ends the wait; otherwise the capture keeps waiting (up to 10 minutes; Ctrl-C cancels). |
+| Then | Every dashboard tab is closed at once and Chrome is stopped. The value goes through the same reader and into the same keychain item as a piped session, with no second read. |
 
 ```js
 (() => { const k = Object.keys(localStorage).find(k => k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && localStorage[k]; return v && v.includes('access_token') ? v : null; })()
@@ -232,16 +233,19 @@ whether the owner has to sign in. The expression only reads.
 **The confirm hook judges what it read.** The tab stays open on an expired session,
 or one M1 refuses, until a new sign-in replaces it. The hook never renews: only a
 copied session is renewed at login, and a captured refresh token is never presented.
-A refused token is remembered for the run and not sent again, so a tab on a dead
-session costs one read rather than one per poll. A read that cannot decide ends the
+A refused token is remembered for the run with what M1 said, and not sent again, so a
+tab on a dead session costs one read rather than one per poll, and the timeout names
+the cause. A read that cannot decide ends the
 wait with an error and takes nothing: a 429 or a 5xx whatever its body, or an answer
 with no verdict in it. An HTML page on any other status counts as a refusal, since it
 may be either a bot check or a dead session; the tab stays open and that token is not
 sent again. `--browser --no-verify` skips this read; the expiry check still runs, and
 replacing a stored session still needs `--overwrite`.
 
-A confirmed capture is read twice: once by the hook, to decide whether the tab
-closes, and once after it, to decide whether anything is stored.
+A confirmed capture gets that one read. Once the hook has said ready, Chrome has
+stopped and site storage is gone, so a 429, a 5xx or a dropped connection on another
+read would throw a finished sign-in away. A piped session has its read before the
+keychain write instead.
 
 ### 3. Document downloads — two hosts, both pre-signed
 
