@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.18.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.20.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -63,8 +63,8 @@ render partial data as if it were complete.
 - **The password login is blocked at M1's edge** (HTTP 403 Cloudflare page
   since 2026-10-27; docs/api.md Trap 7). The login that works is the browser
   session, and `auth login --browser` is its primary route: a Chrome window
-  opens at dashboard.m1.com, the owner signs in on M1's own page, and `m1f`
-  reads the Auth0 session out of it (`pk-cli-browser`; the capture is
+  opens at dashboard.m1.com, the owner signs in on M1's own page if it asks, and
+  `m1f` reads the Auth0 session out of it (`pk-cli-browser`; the capture is
   `auth0::browser_capture`). The fallback without Chrome is `auth login
   --browser-session --stdin` with the session copied out of DevTools. Both go
   through one reader (`auth0::parse_browser_capture` / `parse_captured`, which
@@ -73,10 +73,56 @@ render partial data as if it were complete.
   sign-in window on its own initiative, never captures, pastes or exchanges a
   live session or token itself, and never "retries" the password login to
   see whether the 403 cleared — each attempt is a lockout risk.
+- **The window's profile is kept between sign-ins**, so M1 remembers the device
+  and a re-login often needs no input (`--fresh-profile` opts out for one run).
+  `commands::auth::browser_launch` turns on `clear_site_storage`: the page keeps the
+  session's tokens in `localStorage`, and a retired refresh token left there can get
+  the whole family revoked. Keep it on. `commands::auth::confirm_candidate` lets the
+  tab close only on an unexpired session M1 has not definitely refused (an undecided
+  read keeps the sign-in, below), and never renews a candidate.
+  `auth0::CAPTURE_EXPRESSION` and the DevTools snippet only read: clearing site storage
+  belongs to `clear_site_storage`.
+- **It is a full Chrome profile** (cookies, history with full URLs, HTTP cache),
+  `0700` its only protection beyond Chrome's cookie encryption, which on
+  Linux with no desktop keyring uses a fixed, publicly known key. It outlives a
+  failed sign-in, so every failure from the window on says so: they all pass through
+  `through_the_window` into `failed_sign_in`, so add a new step there. `auth status`
+  reports it as `browser_profile` through `browser_profile_status`, whose tests fill
+  the seam with `profile_exists_in`. It says a profile is kept, not that anything is
+  signed in there.
+- **A read that cannot decide keeps the sign-in.** In `confirm_candidate` only `Auth`
+  from `read_in_window` is a refusal (`NotYet`), and only a 401 or M1's own JSON is
+  `Auth` there: the hook reads through `M1Client::execute_in_window`, whose
+  `edge_in_window` is not `Auth`. Anything else is `Ready` with its cause in
+  `WindowMemory::unverified`, `store_session` warns even under `-q` (`stored_notes`),
+  and the `--json` result says `verified: false` (`login_result`, which sets
+  `AuthStatus::verified`, always a boolean there and left off `auth status`), as
+  it does for `--no-verify` (`stored_unread`), `auth set-credential` and the password
+  login. The page held the only copy, so the session is stored. Ordinary reads use
+  `html_error`, and a piped session stores nothing unless its read proves it.
+- **Signing in does not clear a block at the edge.** An HTML page on any status but a
+  401, or a 403 with no JSON, is `WindowReadError::Edge` to the hook. Its warning, an
+  ordinary read's error, a renewal's (`auth0::token_response`) and the MCP fix
+  (`AFTER_A_BLOCK`) all put a new sign-in last (`client::edge_block_advice`), or the
+  owner spends sign-ins in a loop that exits 0 each time. On a read it is exit 5, not
+  `Auth`: `with_reauth` renews on any `Auth`, which would rotate the refresh token for
+  nothing. Only a 401 or M1's own JSON is `Auth`. A 429, a 5xx or a dropped connection
+  keeps "if reads keep failing".
+- **`auth logout` removes the kept profile, and no test may reach the real one.**
+  Its removal goes through the `run_logout` seam: the binary binds
+  `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir
+  (`pk-cli-browser`'s `test-util`, a dev-dependency only). Every step of a logout is
+  attempted even after one fails, the profile last, so a keychain or config failure
+  does not leave it behind, and it loads no config (`reads_config`), so a file that
+  cannot be parsed stops nothing. The error is built from the inner messages, says
+  what is cleared and what remains, and keeps the first failure's exit code
+  (`LogoutSteps::report`).
 - **Tests never launch Chrome.** The browser capture is tested offline: the
   capture definition validates, its host rule and expression match what the
-  reader takes, and the synthetic fixture goes through the reader. The flag
-  conflicts are clap's, so the CLI tests exit 2 before any keychain read.
+  reader takes, the synthetic fixture goes through the reader, and the confirm
+  hook runs on captures built by hand. The in-use test holds the profile with a
+  shell-script stand-in for Chrome. The flag conflicts are clap's, so the CLI
+  tests exit 2 before any keychain read.
 - **MFA is a replay, not a resume.** M1 has no challenge object and no resume
   mutation: `outcome` is a plain object. When a code is required, M1 says so
   through the `error` scalar, and the client re-sends the **same `Authenticate`
@@ -132,9 +178,9 @@ login and a logout hold it around their keychain write only, never across the
 sign-in: a login checks it first (`Ctx::before_signin`), stores through
 `Ctx::store_login`, and a logout's delete runs with or without it
 (`Ctx::forget_tokens`). The tools never sign in: an auth error asks the user to run
-`m1f auth login --browser`
-in a terminal (the profile's standard remedy names plain `auth login`, which
-M1 now refuses).
+`m1f auth login --browser --overwrite` in a terminal (the profile's standard remedy
+names plain `auth login`, which M1 now refuses), or to wait first after a block at the
+edge.
 
 - Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
   through a fixture `Source` and cli-common's conformance helper;
@@ -243,4 +289,7 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `M1F_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session.
+never carries a session, and it moves neither the kept browser profile nor the
+config: under it `auth logout` leaves both in place and says so
+(`keychain_redirected`), a sign-in writes no config, and `--browser` uses a scratch
+profile.

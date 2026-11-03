@@ -367,6 +367,112 @@ fn a_browser_login_refuses_other_sources_and_the_password_flags() {
     }
 }
 
+/// A config that cannot be parsed stops only what reads it. The read fails before
+/// the keychain, and HOME and the keychain service point at nothing in case that
+/// changes.
+#[test]
+fn a_broken_config_stops_only_the_commands_that_read_it() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.json");
+    std::fs::write(&config, "not json").unwrap();
+    m1f()
+        .env("HOME", home.path())
+        .arg("--config")
+        .arg(&config)
+        .args(["config", "path"])
+        .assert()
+        .success();
+    m1f()
+        .env("HOME", home.path())
+        .env("M1F_KEYCHAIN_SERVICE", "m1f-test-empty-service")
+        .arg("--config")
+        .arg(&config)
+        .args(["auth", "status"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("parsing"));
+}
+
+/// `--fresh-profile` picks the profile of a browser sign-in, so it means nothing
+/// without `--browser`: exit 2 at parse time, before the keychain, Chrome or M1.
+/// Each source here reaches the keychain if it ever parses.
+#[test]
+fn fresh_profile_needs_the_browser_flag() {
+    for extra in [
+        &[][..],
+        &["--browser-session"],
+        &["--stdin"],
+        &["--browser-session", "--stdin"],
+        &["--from-env", "M1F_TEST_SESSION"],
+        &["--username", "owner@example.invalid"],
+        &["--code", "000000"],
+    ] {
+        m1f()
+            .args(["auth", "login", "--fresh-profile"])
+            .args(extra)
+            .env("M1F_TEST_SESSION", "{}")
+            .write_stdin("{}")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--fresh-profile"));
+    }
+}
+
+/// The help says the profile stays on disk and how to remove it.
+#[test]
+fn the_help_says_what_happens_to_the_kept_profile() {
+    let login = m1f()
+        .args(["auth", "login", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&login.stdout);
+    assert!(
+        help.lines().any(|l| l.trim() == "--fresh-profile"),
+        "no --fresh-profile option in:\n{help}"
+    );
+    for needle in ["keeps between sign-ins", "m1f auth logout"] {
+        assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
+    }
+    let logout = m1f()
+        .args(["auth", "logout", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&logout.stdout);
+    for needle in [
+        "kept browser profile",
+        "first failure's code",
+        "already cleared",
+    ] {
+        assert!(help.contains(needle), "missing {needle:?} in:\n{help}");
+    }
+    // The command list shows the summary, on one line; the detail is above.
+    let auth = m1f().args(["auth", "--help"]).output().expect("runs");
+    let help = String::from_utf8_lossy(&auth.stdout);
+    let row = help
+        .lines()
+        .find(|l| l.trim_start().starts_with("logout"))
+        .expect("a logout row");
+    assert!(
+        row.trim_end()
+            .ends_with("Clear the session and remove the kept browser profile"),
+        "{row}"
+    );
+    assert!(!help.contains("first failure's code"), "{help}");
+}
+
+/// The DevTools snippet runs in the owner's own browser, so it must never change
+/// what it reads.
+#[test]
+fn the_devtools_snippet_stays_read_only() {
+    let login = m1f()
+        .args(["auth", "login", "--help"])
+        .output()
+        .expect("runs");
+    let help = String::from_utf8_lossy(&login.stdout);
+    assert!(help.contains("copy(localStorage["), "{help}");
+    assert!(!help.contains("removeItem"), "{help}");
+}
+
 /// `--browser` is the primary route in the help an owner reads, with what it
 /// does and the Chrome override; the DevTools route follows as the fallback.
 #[test]

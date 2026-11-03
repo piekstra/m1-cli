@@ -18,7 +18,7 @@ copy of the `--http` bearer token you give your own Cloudflare Worker:
 | Access token | OS keychain, service `piekstra.m1f` | Short-lived bearer token. Refreshed in place. A browser session's is an Auth0 access token for M1's API. |
 | Refresh token | OS keychain, service `piekstra.m1f` | Long-lived. Treat as equivalent to your password. A browser session's is sent only to M1's Auth0 token endpoint (`https://account.m1.com/oauth/token`). |
 | Browser-session capture | **Not stored.** | `auth login --browser` reads auth0-spa-js's cache entry out of the sign-in window; `auth login --browser-session` reads it from stdin/env. Either way only the access token, refresh token, expiry and client id are kept; the id token and the profile claims in it are dropped. A token whose audience is not M1's API, or whose issuer is not `account.m1.com`, is refused before anything is sent anywhere — so a captured or pasted token cannot direct the refresh token to another host. |
-| Sign-in window profile | A fresh `0700` directory in the temp dir, **deleted** when the login ends | `auth login --browser` runs Chrome in a throwaway profile, created exclusively under an unpredictable name, so nothing of your everyday browser is read and nothing of the sign-in stays behind. Chrome's DevTools port (loopback only, a port Chrome picks) has no authentication: while the window is open, any local process that reaches it could read that window's session. The window is open only while you sign in; the dashboard tab is closed the moment the session is read, then Chrome is stopped and the profile removed, Ctrl-C included. The session is read only from pages on exactly `dashboard.m1.com` (docs/api.md, "The browser capture"). |
+| Sign-in window profile | **Kept on disk**, `0700`, until `auth logout` removes it | See [The kept browser profile](#the-kept-browser-profile). `--fresh-profile` uses a scratch `0700` directory in the temp dir instead, created exclusively under an unpredictable name and deleted when the window closes, Ctrl-C included. Chrome's DevTools port (loopback only, a port Chrome picks) has no authentication: while the window is open, any local process that reaches it could read that window's session. The window is open only while you sign in; the dashboard tab is closed the moment the session is read, then Chrome is stopped. The session is read only from pages on exactly `dashboard.m1.com` (docs/api.md, "The browser capture"). |
 | MFA breadcrumb | OS keychain, service `piekstra.m1f` | Only a marker that a code was requested — it holds **no credential**, because M1 has no resumable session. Deleted on the next successful login. |
 | `--http` bearer token | OS keychain, service `piekstra.m1f`, item `mcp-http-token`, or `M1F_MCP_TOKEN`; **a copy in your Cloudflare Worker**, as its `HOME_M1_TOKEN` secret | Only if you use `m1f mcp --http`. It admits a caller to the read-only tools on 127.0.0.1; it signs in to nothing at M1. |
 | Refresh lock | `~/.config/m1f/token-refresh.lock` | An empty file. `m1f` processes hold it while renewing the session, so two never present one refresh token. That holds once every copy sharing the keychain item is 0.5.2 or later, including a server not yet restarted and an installed Claude Desktop extension, which bundles its own binary. No secrets. |
@@ -42,9 +42,10 @@ These are enforced by code and tests, not just convention:
   account-number-shaped digit runs and id-blob-shaped tokens in the message,
   because on this reverse-engineered API an error can echo request context.
   Enforced by `client::redact_errors_drops_unknown_fields_and_scrubs_the_message`.
-- **Secrets never reach a file.** The keychain is the only persistence. The
-  one exception is outside `m1f`'s hands: Chrome's own scratch profile holds
-  the signed-in page while the sign-in window is open, and is deleted with it.
+- **`m1f` never writes a secret to a file.** The keychain is its only
+  persistence. The one exception is Chrome's own: the profile a `--browser`
+  sign-in keeps (below) holds what Chrome keeps for the pages opened in it, until
+  `auth logout` removes it. `--fresh-profile` avoids it.
 - **No raw captures are committed.** Fixtures under `tests/fixtures/` are
   synthetic. A pre-signed document URL is a live credential with a real
   expiry — capturing one into a repo leaks account access, so the test suite
@@ -63,7 +64,7 @@ Desktop) over stdio, on this machine only; it opens no port unless run
 with `--http` (below). It uses the
 session already in the keychain, exactly as the commands do, refreshing it
 in place, and never signs in: a missing or lapsed session is an error asking
-the user to run `m1f auth login --browser` in a terminal. No tool downloads
+the user to run `m1f auth login --browser --overwrite` in a terminal. No tool downloads
 a document or emits a document's raw id or link. The Claude Desktop
 extension (`.mcpb`) takes no settings and so holds no credential of its
 own; on macOS its bundled binary needs the user's approval, once, to read
@@ -91,13 +92,78 @@ a leaked token can do, is in the connector's
 
 `M1F_KEYCHAIN_SERVICE` renames the keychain service read, for tests and
 for checking the error paths against an empty service. It carries no
-secret.
+secret. It moves neither the kept browser profile nor the config, so while it names
+another service `auth logout` leaves both in place and says so, a sign-in writes no
+config, and `--browser` signs in through a scratch profile.
+
+## The kept browser profile
+
+`auth login --browser` runs Chrome in a profile of its own, so nothing of your
+everyday browser is read, and keeps it so M1's sign-in remembers this device: a
+later sign-in often needs no password, code or bot check. It lives at
+`~/Library/Application Support/piekstra.m1f/browser-profile` on macOS and under
+`$XDG_DATA_HOME` or `~/.local/share` on Linux; a launch is refused if the path is
+a symlink, another user's or not `0700`. It is a full Chrome profile, and that is
+the trade for fewer sign-ins. It holds:
+
+- M1's cookies: Auth0's single sign-on session and the remembered device;
+- browsing history with full URLs, query strings included;
+- the HTTP cache, for whatever the responses allow: account data among it;
+- any password you let Chrome save.
+
+Chrome encrypts its cookies at rest with a key from the system's keyring: on macOS
+the "Chrome Safe Storage" key in the login keychain. On Linux with no desktop
+keyring it falls back to a fixed, publicly known key, so there the session cookie
+has only the directory's `0700` mode protecting it. Everywhere, the encryption
+does not cover the history or the HTTP cache, so `0700` is their only
+protection. The directory sits where ordinary user-level backups usually look, so
+exclude it from any backup you don't want holding this.
+
+**The session's tokens do not stay in it.** auth0-spa-js keeps the access and
+refresh tokens in `localStorage`, which Chrome does not encrypt. A refresh token left
+there would be retired at `m1f`'s next renewal, and a later window could present it,
+which Auth0 answers by revoking the whole family, the session in the keychain
+included. So the profile keeps its cookies and never its site storage: `localStorage`,
+`sessionStorage`, IndexedDB, service workers and the rest are removed before Chrome
+starts, where a failure refuses the launch, and again once Chrome has stopped. A crash
+or a second Ctrl-C skips the second removal, as does a Chrome still running in the
+profile. The tokens are then on disk until the next launch or `auth logout`, with only
+`0700` protecting them. The capture only reads. It refuses anything expired or that
+M1 refuses, unless `--no-verify` skips that read, and `m1f` never renews from the
+window. A bot check, a throttle or an outage during that check takes the session
+unverified, with a warning, as below.
+
+**A session its one read could not decide on is stored unverified.** A bot check, a
+throttle or an outage on that read does not discard the sign-in: the page held the only
+copy, and a token there can only be this sign-in's, since site storage goes before
+Chrome starts. `m1f` warns on stderr, under `-q` too, and such a session never replaces
+a stored one without `--overwrite`.
+
+**The profile outlives a failed sign-in.** However a sign-in fails once its window
+has opened (a timeout, a closed window, Ctrl-C, a keychain write that fails), the
+profile stays with what the sign-in got as
+far as, which can be a live session in its cookies, and the error says so. `m1f auth
+status` says whether a profile is kept, not whether anything is signed in there.
 
 ## Revoking access
 
-`m1f auth logout --forget` clears the stored tokens and the config identity.
-That removes this machine's copy of the credentials; it does not invalidate the
-session server-side. To do that, change your M1 password and sign out other
+`m1f auth logout` clears the stored tokens and removes the kept browser profile,
+and only that directory, as its last step; `--forget` also clears the config
+identity. There is no way to remove the profile alone. Every step is attempted even
+after one fails, and a config that cannot be parsed stops none of them, so a keychain
+or config failure does not leave the profile behind.
+If one fails, the error says what is cleared and what remains, and how to finish,
+with the first failure's exit code. The profile's removal refuses while a sign-in or
+a Chrome is using it, or when the path is a symlink or another user's; on its own
+that is exit 1, with only the profile remaining.
+
+A release before 0.6.0 does not know the kept profile, and its `auth logout` leaves
+it behind. Run `m1f auth logout` before downgrading, or delete
+`~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under
+`$XDG_DATA_HOME` or `~/.local/share`) by hand afterwards.
+
+That removes this machine's copies of the credentials; it does not invalidate
+the session server-side. To do that, change your M1 password and sign out other
 devices from M1's own web app or mobile app.
 
 The delete runs even when the refresh lock is unavailable. If another process has

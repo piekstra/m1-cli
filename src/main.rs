@@ -123,15 +123,28 @@ enum AuthCmd {
     ///
     ///   m1f auth login --browser
     ///
-    /// opens a Chrome window, with a throwaway profile, at
-    /// https://dashboard.m1.com. Sign in there as usual: the password and any
-    /// emailed code go to M1's page, never to m1f. Once you are in, m1f reads
-    /// the session from the dashboard's localStorage, closes the tab at once
-    /// (so the web app cannot rotate the refresh token it just handed over),
-    /// quits Chrome and deletes the profile. It checks the session with one
-    /// read before storing it, then renews it on its own. The wait is up to
-    /// 10 minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary that is
-    /// not in a standard place. Pass --overwrite to replace a stored session.
+    /// opens a Chrome window at https://dashboard.m1.com, in a profile m1f
+    /// keeps between sign-ins. Sign in there as usual: the password and any
+    /// emailed code go to M1's page, never to m1f. Once the dashboard's
+    /// localStorage holds a session M1 does not refuse, m1f reads it, closes the
+    /// tab at once (so the web app cannot rotate the refresh token it just handed
+    /// over) and quits Chrome. It checks the session with one read before storing
+    /// it, then renews it on its own. If that read cannot decide (a bot check, M1
+    /// throttled or down), m1f stores the session anyway, since the page held the
+    /// only copy, and warns even under -q that it is unverified. If reads keep
+    /// failing, run `m1f auth login --browser --overwrite`; after a bot check, wait
+    /// or try another network first, since a new sign-in may not help. The window
+    /// waits up to 10 minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary
+    /// that is not in a standard place. Pass --overwrite to replace a stored session.
+    ///
+    /// The kept profile (owner-only, on disk) lets M1 remember this device, so
+    /// a later sign-in often needs no input: the window opens, the session is
+    /// read and the window closes. It is a full Chrome profile: M1's cookies,
+    /// browsing history with full URLs and the HTTP cache stay, after a failed
+    /// sign-in too, until `m1f auth logout` removes it. The session's tokens do
+    /// not: site storage goes before Chrome starts and again once it stops.
+    /// --fresh-profile signs in through a scratch profile instead, removed when
+    /// the window closes, and leaves the kept one alone.
     ///
     /// Without Chrome, copy the session out of any browser and pipe it in
     /// (--browser-session):
@@ -162,7 +175,12 @@ enum AuthCmd {
     Login(commands::auth::LoginCmdArgs),
     /// Report credential/session state (auth-status/v1).
     Status,
-    /// Clear the session; --forget also removes stored tokens and identity.
+    /// Clear the session and remove the kept browser profile.
+    ///
+    /// --forget also removes the stored identity. Every step is attempted even
+    /// after one fails; then this says what is cleared and what remains, and exits
+    /// with the first failure's code. While Chrome is using the kept profile that
+    /// is exit 1, with the rest already cleared and only the profile left.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -265,6 +283,20 @@ fn main() {
     }
 }
 
+/// Whether a command uses the loaded config, so that one which cannot be parsed
+/// stops nothing else. `auth logout` above all: it runs every step regardless.
+/// `config` loads the file itself, for the subcommands that read it.
+fn reads_config(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Auth(AuthCmd::Logout(_))
+            | Command::Config(_)
+            | Command::SelfUpdate(_)
+            | Command::Completions { .. }
+            | Command::Info
+    )
+}
+
 fn run(cli: &Cli) -> Result<(), CliError> {
     let store = ConfigStore::new(BIN).with_override(cli.config.clone());
     // `M1F_KEYCHAIN_SERVICE` exists for the test suite and for dogfooding
@@ -273,12 +305,18 @@ fn run(cli: &Cli) -> Result<(), CliError> {
     // "not logged in", where the real service would open the user's actual
     // session (and, from the ad-hoc-signed binary `cargo test` builds, raise
     // a macOS keychain prompt). It renames which entry is read; it never
-    // carries a session.
+    // carries a session. It moves neither the kept browser profile nor the config,
+    // so under it `auth logout` leaves both alone, a sign-in writes no config, and
+    // `--browser` uses a scratch profile.
     let creds = match std::env::var("M1F_KEYCHAIN_SERVICE") {
         Ok(service) if !service.is_empty() => CredentialStore::new(service),
         _ => CredentialStore::for_binary(BIN),
     };
-    let cfg: config::Config = store.load()?;
+    let cfg: config::Config = if reads_config(&cli.command) {
+        store.load()?
+    } else {
+        config::Config::default()
+    };
 
     if let Command::Mcp(args) = &cli.command {
         return pk_cli_mcp::run(
@@ -450,6 +488,21 @@ mod tests {
             Command::Auth(AuthCmd::Login(args)) => Ok(args),
             other => panic!("parsed as {other:?}"),
         }
+    }
+
+    /// A logout must run with a config it cannot parse.
+    #[test]
+    fn logout_does_not_read_the_config() {
+        let reads = |args: &[&str]| {
+            let cli = Cli::try_parse_from(["m1f"].iter().chain(args)).unwrap();
+            reads_config(&cli.command)
+        };
+        assert!(!reads(&["auth", "logout"]));
+        assert!(!reads(&["auth", "logout", "--forget"]));
+        assert!(!reads(&["config", "path"]));
+        assert!(reads(&["auth", "status"]));
+        assert!(reads(&["auth", "login", "--browser"]));
+        assert!(reads(&["accounts", "list"]));
     }
 
     /// `--browser` is the browser-session login, alone or beside

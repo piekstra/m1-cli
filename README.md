@@ -46,17 +46,53 @@ m1f auth login --browser
 m1f auth status
 ```
 
-`--browser` opens a Chrome window (a throwaway profile) at
-<https://dashboard.m1.com>. Sign in there as usual; your password and any
-emailed code go to M1's page, never to `m1f`. Once you are in, `m1f` reads the
-session out of the page, closes the tab at once (so the web app cannot rotate
-the refresh token it just handed over), quits Chrome and deletes the profile.
-The wait is up to 10 minutes and Ctrl-C cancels. If Chrome is installed
-somewhere unusual, point `M1F_CHROME` at its binary. To replace a stored
-session, add `--overwrite`.
+`--browser` opens a Chrome window at <https://dashboard.m1.com>, in a profile
+`m1f` keeps between sign-ins. Sign in there as usual; your password and any
+emailed code go to M1's page, never to `m1f`. Once the page holds a session M1 does
+not refuse, `m1f` takes it out of the page, closes the tab at once (so the web app
+cannot rotate the refresh token it just handed over) and quits Chrome. The wait
+is up to 10 minutes and Ctrl-C cancels. If Chrome is installed somewhere unusual,
+point `M1F_CHROME` at its binary. To replace a stored session, add `--overwrite`.
 
 `m1f` checks the session with one read (`viewer.isAuthenticated`) before it
-stores anything, then renews it on its own.
+stores anything, then renews it on its own. If M1 refuses it, the window stays open
+for a new sign-in. If the read cannot decide (a bot check, M1 throttled or down), `m1f`
+stores the session anyway, since the page held the only copy, exits 0, and warns even
+under `-q` that it is unverified; `--json` says `verified: false`. If reads then keep
+failing, run `m1f auth login --browser --overwrite`. After a bot check, wait or try
+another network first: a new sign-in may not help, because the block is on the client
+rather than the session.
+
+The kept profile lets M1 remember this device, so a later sign-in often needs no
+password, code or bot check: the window opens, the session is read and the window
+closes. It lives at `~/Library/Application Support/piekstra.m1f/browser-profile`
+on macOS and under `$XDG_DATA_HOME` (or `~/.local/share`) on Linux, owner-only
+(`0700`); other systems use a scratch profile every time. `m1f auth login
+--browser --fresh-profile` signs in once through a scratch profile, deleted
+afterwards, and leaves the kept one alone.
+
+The trade is more than cookies. It is a full Chrome profile, so it also keeps
+browsing history with full URLs, query strings included, and the HTTP cache, for
+whatever you open in that window. Chrome's cookie encryption does not cover those:
+the directory's `0700` mode is their only protection, and ordinary backups usually
+include the directory ([`SECURITY.md`](SECURITY.md)). On Linux with no desktop
+keyring Chrome encrypts the cookies with a fixed, publicly known key, so there the
+session cookie has only `0700` too.
+
+It does not keep the session's tokens. M1's page holds them in site storage, which
+`m1f` removes before Chrome starts and again once Chrome has stopped. A crash or a
+second Ctrl-C skips the second removal; the next launch or `m1f auth logout` covers
+it.
+
+The profile stays after a failed sign-in too, and every failure once the window
+has opened says so: a timeout, a closed window, Ctrl-C, a keychain write that fails.
+Those can leave a live session in it.
+`m1f auth status` says whether a profile is kept (`browser_profile` with `--json`),
+not whether anything is signed in there. `m1f auth logout` removes it
+and clears the stored session with it. It attempts every step even after one fails,
+then says what is cleared and what remains, and exits with the first failure's code.
+While a sign-in or a Chrome window is using the profile, it clears the session,
+exits 1 and says only the profile remains; close the window and run it again.
 [`docs/api.md`](docs/api.md#the-browser-capture-auth-login---browser) records
 exactly what is read and from which host, and
 [Trap 7](docs/api.md#trap-7-the-password-login-answers-a-cloudflare-403) the
@@ -192,8 +228,9 @@ hold it. Install `m1f` and run `m1f auth login --browser` in a terminal
 (see [Getting started](#getting-started)). Both ways of connecting Claude
 below then use that session from the OS keychain (service `piekstra.m1f`),
 and refresh it in place as the commands do. If the session is missing or has
-lapsed, the tools say so and ask you to run `m1f auth login --browser` in a
-terminal; they never sign in by themselves.
+lapsed, the tools say so and ask you to run `m1f auth login --browser --overwrite`
+in a terminal; they never sign in by themselves. After a block at the edge they say to
+wait or try another network first.
 
 **Claude Code.** Add the `m1-cli` plugin from the
 [piekstra plugin marketplace](https://github.com/piekstra/claude-plugins):

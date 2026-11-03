@@ -134,29 +134,36 @@ synthetic copy of the shape.
    A pasted value it refuses is exit 2 with what to copy instead; a captured
    one is exit 5 naming what was wrong, since that means M1 changed how its
    web app keeps the session.
-3. One read, `viewer { isAuthenticated }`, must answer `true` before anything
-   is stored (`--no-verify` skips it). An access token already expired is
-   renewed first.
+3. One read, `viewer { isAuthenticated }`. A piped session is stored only if it
+   answers `true` (`--no-verify` skips it), and an access token already expired is
+   renewed first. For `--browser` the read is the confirm hook's, below: a refusal
+   stores nothing, and an answer that cannot decide stores the session unverified.
 4. On an auth failure, a read renews the session at
    `https://account.m1.com/oauth/token` (`grant_type=refresh_token`,
    `client_id`, `refresh_token`, form-encoded, `Origin:
    https://dashboard.m1.com`), keeps the rotated refresh token, and retries
    once. `invalid_grant` is exit 3 naming the recapture (`m1f auth login
-   --browser --overwrite`); 429, an HTML answer and 5xx are exit 5.
+   --browser --overwrite`), and so is a 401 whatever its body. A 429, a 5xx and any
+   other HTML answer are exit 5. An HTML page on the read itself is not an auth failure
+   unless its status is a 401, so it makes no renewal (Trap 3).
 
 `auth status` reports `method: browser-session` for a session from either
 route: the stored bundle records that it came from Auth0 (its `auth0` field,
-which says where it renews), not which route handed it over.
+which says where it renews), not which route handed it over. Its `browser_profile`
+says whether a profile is kept, not whether anything is signed in there. It is left
+out under `M1F_KEYCHAIN_SERVICE`, and with a warning when the path needs repair.
 
 **The shared-refresh-token trap.** Auth0 tenants normally rotate refresh
 tokens, and answer the reuse of a retired one by revoking the whole family. A
 session copied out of a browser that stays open is held twice: whichever of
 the browser or `m1f` renews second presents a retired token, and both lose the
-session. The browser capture closes the dashboard tab the moment it has read
-the session, before the web app can renew, then quits Chrome and deletes its
-profile. The DevTools route relies on the owner: a private window, closed
-after copying **without signing out** (signing out may revoke the session
-`m1f` now holds).
+session. The browser capture closes the dashboard tab as soon as it reads the
+session, before the web app can renew, then quits Chrome.
+The DevTools route relies on the owner: a private window, closed after copying
+**without signing out** (signing out may revoke the session `m1f` now holds).
+
+The profile `--browser` keeps is not a second holder: its site storage goes around
+every launch (below).
 
 Every `m1f` process holds it too: the long-running `mcp --http` server, a stdio
 server and a terminal command share one keychain item. So a renewal runs under
@@ -177,12 +184,12 @@ The mechanism is cli-common's `pk-cli-browser` (its DESIGN.md §2.2); what
 
 | | |
 | --- | --- |
-| Launch URL | `https://dashboard.m1.com` (`client::WEB_ORIGIN`). Chrome starts with only a debug port of its own choosing, a scratch `0700` profile and first-run suppression, so the page sees an ordinary browser. `M1F_CHROME` overrides which Chrome binary. |
+| Launch URL | `https://dashboard.m1.com` (`client::WEB_ORIGIN`). Chrome starts with only a debug port of its own choosing, the profile `m1f` keeps (below) and first-run suppression, so the page sees an ordinary browser. `M1F_CHROME` overrides which Chrome binary. |
 | Sign-in | The dashboard sends the owner to Auth0's page on `account.m1.com`: password and any emailed code are typed there, never into `m1f`. That host is never read from. |
 | Read from | Pages on exactly `dashboard.m1.com` (`HostRule::exact`): `https` on the default port, matched label by label, so `account.m1.com`, `m1.com` and look-alike hosts are not read. |
 | What is read | This expression, evaluated in those pages (`auth0::CAPTURE_EXPRESSION`): |
-| Ready when | The expression answers with a string: the cache entry for M1's API exists and holds an `access_token`, which is only true once the owner is signed in. Before that it answers `null` and the capture keeps waiting (up to 10 minutes; Ctrl-C cancels). |
-| Then | Every dashboard tab is closed at once, Chrome is stopped and the profile deleted. The value goes through the same reader, check and store as a piped session. |
+| Ready when | The expression answers with a string (the cache entry for M1's API exists and holds an `access_token`) and the confirm hook accepts it: the reader takes it, its access token has not expired, and one `viewer.isAuthenticated` read does not refuse it (no read with `--no-verify`; the expiry check still runs). An answer that cannot decide takes the session unverified, with a warning (below); a refusal or an expired token keeps the capture waiting (up to 10 minutes; Ctrl-C cancels). |
+| Then | Every dashboard tab is closed at once and Chrome is stopped. The value goes through the same reader and into the same keychain item as a piped session, with no second read. |
 
 ```js
 (() => { const k = Object.keys(localStorage).find(k => k.startsWith('@@auth0spajs@@::') && k.includes('lens.m1finance.com')); const v = k && localStorage[k]; return v && v.includes('access_token') ? v : null; })()
@@ -195,7 +202,95 @@ prefix and audience the reader looks for, and to this page.
 
 A timeout or a window closed before the sign-in finished is exit 3 naming
 the command to re-run; no Chrome found is exit 1 pointing at the DevTools
-route.
+route. Every failure once Chrome has run in the kept profile adds that the profile
+stays and what removes it, whichever step failed
+(`commands::auth::through_the_window`).
+
+**The kept profile.** Chrome runs in
+`~/Library/Application Support/piekstra.m1f/browser-profile` on macOS and under
+`$XDG_DATA_HOME` (or `~/.local/share`) on Linux, owner-only (`0700`), and it
+stays when the window closes, after a failed sign-in too (cli-common's DESIGN.md
+§2.2). Auth0's single sign-on cookie and M1's remembered device carry over, so a
+later sign-in should often need no input. `--fresh-profile` uses a scratch profile
+for one run instead. `auth logout` removes the kept one as its last step; a
+refusal (a sign-in or a Chrome using it, a symlink, another user's) is exit 1,
+saying what is already cleared and how to finish. Each step of a logout is attempted
+even after one fails (`commands::auth::run_logout`), and the exit code is the first
+failure's. Chrome is asked to quit over its debug port, so a cookie M1 sets just
+before the close reaches the disk; cli-common measured that in headless Chrome, not
+in a visible window. SECURITY.md lists what the profile holds.
+
+**The tokens do not stay.** A cache entry left in the profile would start the next
+window on an access token that has often expired and a refresh token `m1f` may have
+retired, and auth0-spa-js could present it, the reuse Auth0 answers by revoking the
+family. So the launch sets `clear_site_storage(true)`, which keeps the cookies and
+removes `Default/Local Storage`, `Session Storage`, `IndexedDB` and the rest of the
+site storage twice: before Chrome starts, where a failure refuses the launch (exit 1,
+no Chrome), and again once Chrome has stopped. A crash or a second Ctrl-C skips the
+second removal, as does a Chrome still running in the profile; the tokens then stay
+on disk, `0700` their only protection, until the next launch or `auth logout`. Each
+window therefore opens with no session in the page, and Auth0's cookie decides
+whether the owner has to sign in. The expression only reads.
+
+**The confirm hook judges what it read.** The tab stays open on an expired session,
+or one M1 refuses, until a new sign-in replaces it. A refusal has to be definite: a
+401, or M1's own JSON saying so (an auth error, `isAuthenticated: false`, a JSON 403).
+The hook never renews: only a
+copied session is renewed at login, and a captured refresh token is never presented.
+A refused token is remembered for the run with what M1 said, and not sent again, so a
+tab on a dead session costs one read rather than one per poll, and the timeout names
+the cause.
+
+**An answer that cannot decide keeps the sign-in.** A 429 or a 5xx whatever its body, a
+dropped connection, an empty or unparseable body, an answer with no verdict in it, or
+an HTML page on any status but a 401 ends the wait at once with the session taken.
+`m1f` stores it, exits 0, and warns on stderr, under `-q` too. The warning names the
+cause (a bot check names itself) and says the session is unverified. Under `--json` the
+login result says `verified: false`. The page held the only local copy and site storage
+goes when Chrome stops, so discarding the session would cost a new sign-in. Site storage
+also went before Chrome started, so a token in the page can only be this sign-in's: a bad
+one costs one more sign-in, the same as discarding it, and a good one costs none.
+`refuse_overwrite` runs before the window, so an unverified session never replaces a
+stored one without `--overwrite`.
+
+What the warning says next, and what a later read does with the same answer:
+
+| Answer | The sign-in's warning | An ordinary read |
+| --- | --- | --- |
+| An HTML page on any status but a 401, or a 403 with no JSON (`client::edge_in_window`) | A new sign-in may not help, because a block like this is on the client rather than the session: wait or try another network, and only if reads still fail after that, run `m1f auth login --browser --overwrite`. | The same advice. Exit 5, no renewal. |
+| Anything else that cannot decide: a 429, a 5xx, a dropped connection, an empty or unparseable 2xx, no verdict | A later read may settle it; if reads keep failing, run `m1f auth login --browser --overwrite`. | Exit 5 where it fails, no renewal, no sign-in advice. |
+| A 401 whatever its body, or M1's own JSON refusal | Keeps waiting and stores nothing. | One renewal, then exit 3 naming the login. |
+
+Signing in does not clear a block on this client, and each attempt spends a sign-in and
+replaces the stored session, exiting 0 each time. So a renewal's answer from the token
+endpoint (`auth0::token_response`) and the MCP tools' fix give the first row's advice too.
+An HTML page is exit 5 on a read because it is not M1's own refusal, and exit 5 means
+retry later, which is what the advice says. No capture has recorded a lapsed session
+answering HTML on `lens.m1.com` (Trap 3), and `with_reauth` renews on any `Auth`, so as
+`Auth` each blocked read would rotate the refresh token for nothing.
+
+**UNVERIFIED-LIVE:** a bot check on this read has not been seen. Reading an HTML page
+as no verdict rests on Trap 3 and Trap 7, not on a capture of this read.
+
+An ordinary read takes an HTML page as exit 5 (Trap 3), and a piped session stores
+nothing on a read that did not prove it. `--browser --no-verify` skips this read; the
+expiry check still runs, and replacing a stored session still needs `--overwrite`.
+
+A login result under `--json` is `auth-status/v1` with `verified`, always a boolean:
+`true` when a read accepted the session and `false` otherwise, so `jq '.verified == true'`
+is right on every route and a direct JSON caller does not read an untested session as
+proven. It is `false` for `--browser` on a read that could not decide, `--no-verify` on
+`--browser` or `--browser-session`, `auth set-credential`, and the password login, where no
+read follows M1's `Authenticate` answer. `auth status` does not carry it. The family's
+login result is `auth-login/v1`, and a CLI whose login already answers with its own schema
+adds `verified` there. `m1f` does that with `AuthStatus::verified`, the optional field
+cli-common released in v0.20.0
+([cli-common #53](https://github.com/piekstra/cli-common/pull/53), DESIGN.md §1.4).
+
+A capture gets that one read. Once the hook has said ready, Chrome has
+stopped and site storage is gone, so a 429, a 5xx or a dropped connection on another
+read would throw a finished sign-in away. A piped session has its read before the
+keychain write instead.
 
 ### 3. Document downloads — two hosts, both pre-signed
 
@@ -242,8 +337,14 @@ refreshToken } }`. Verified live:
 ## Trap 3: HTML where JSON should be
 
 A Cloudflare challenge returns an HTML interstitial, not GraphQL. `m1f` detects
-a non-JSON body and reports it as an auth failure pointing at `m1f auth login`.
-Not seen live in this session, but the guard stays.
+an HTML body and reports it as exit 5 with no renewal, putting a new sign-in last, since
+signing in does not clear a block on this client (`client::html_error`). An HTML 401
+refuses the token, so it renews once and is then exit 3.
+Not seen live in this session, but the guard stays. A 429 or a 5xx is read by its
+status first, whatever its body, and is exit 5: a throttle or an outage says
+nothing about the session. A browser sign-in's confirm hook takes an HTML page as no
+verdict instead and stores the session unverified (`client::edge_in_window`, "An answer
+that cannot decide keeps the sign-in").
 
 ## Trap 4: M1 puts the error code at the TOP LEVEL, not under `extensions`
 
@@ -308,8 +409,12 @@ What `m1f` does with it:
   this trap and the browser-session login, and stores nothing
   (`client::legacy_login_blocked`). It does **not** retry: a second password
   submission spends a lockout attempt for the same 403.
-- Every other HTML answer (a read, a legacy refresh) is exit 3 pointing at
-  `m1f auth login --browser --overwrite` (`client::html_error`).
+- Every other HTML answer (a read, a legacy refresh) is exit 5 with no renewal
+  (`client::html_error`), except the read a browser sign-in's confirm hook makes, which
+  stores the session unverified. It says a new sign-in may not help, to wait or try
+  another network, and only if reads still fail after that to run `m1f auth login
+  --browser --overwrite`. An HTML 401 is exit 3 and names that login at once. A 429 or a
+  5xx is exit 5 with no sign-in advice (Trap 3).
 - `info` reports `auth.method: browser-session` and `m1f auth login --browser`
   as the hint.
 
@@ -527,6 +632,7 @@ Short, and none of it blocks the tool:
 | `x-*` header necessity | Reads worked with them; their *absence* was not tested against Cloudflare. |
 | Auth0 session end to end | Read from the bundle and the tenant's public metadata, not exercised: no owner session has been captured since Trap 7. The first `auth login --browser` (or `--browser-session`) confirms that `lens.m1.com` takes the Auth0 bearer outside the browser (the bundle says it does). |
 | The browser capture live | `auth login --browser` is tested offline only: the expression against the reader's prefix and audience, the host rule, the fixture through the reader. Whether the dashboard's own entry answers the expression the way the synthetic fixture does is confirmed by the owner's first run. |
+| The kept profile live | Tested offline only. How often a second sign-in needs no input on cookies alone, and whether a visible window's quit gets a fresh cookie to the disk, are confirmed by the owner's first re-login. |
 | Auth0 token lifetime and rotation | The access token's lifetime and whether the tenant rotates refresh tokens are unobserved; `m1f` keeps a rotated token when one comes back and the old one when none does. |
 | Auth0 refresh outside a browser | The token endpoint advertises `none` auth for public clients; whether Cloudflare or Auth0's origin rules let a non-browser renewal through is unobserved. A refusal is exit 3 naming the recapture; an HTML answer exit 5. |
 | Net worth by account | Whether the accounts sum to M1's Invest figure to the cent is unobserved; a difference becomes its own row, and so does a `0.00` remainder beside an unpriced account. |
@@ -539,8 +645,8 @@ Short, and none of it blocks the tool:
 1. **Probe unauthenticated** — `m1f status`. `NORMAL` means the endpoint is up;
    it says nothing about the password login (Trap 7).
 2. **Capture** — `m1f auth login --browser` (add `--overwrite` to replace a
-   stored session): sign in in the Chrome window it opens; it closes itself
-   once the session is read. Without Chrome, the four steps in `m1f auth
+   stored session): sign in in the Chrome window it opens, if it asks; it closes
+   itself once the session is read. Without Chrome, the four steps in `m1f auth
    login --help`: private window at dashboard.m1.com, the DevTools snippet,
    `pbpaste | m1f auth login --browser-session --stdin`, close the window
    without signing out.
