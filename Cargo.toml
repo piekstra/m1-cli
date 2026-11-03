@@ -1,6 +1,6 @@
 [package]
 name = "m1-cli"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Read your M1 (m1.com) investment accounts, holdings, activity, and tax documents from the command line. Keychain-secured, agent-friendly. Unofficial — not affiliated with M1 Holdings."
@@ -20,22 +20,22 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0", features = ["reqwest"] }
-pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
-pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0" }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1" }
 # `m1f mcp`: the MCP profile's tools over the same commands (DESIGN.md §1.9).
-pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0", features = ["stdio", "http"] }
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1", features = ["stdio", "http"] }
 schemars = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls"] }
 
 [dev-dependencies]
 # The MCP profile's conformance checks, for the tests only.
-pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.0", features = ["test-util"] }
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.15.1", features = ["test-util"] }
 assert_cmd = "2"
 predicates = "3"
 
