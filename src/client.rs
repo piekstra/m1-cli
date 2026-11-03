@@ -175,6 +175,30 @@ impl M1Client {
         operation_name: Option<&str>,
         on_html: impl FnOnce(reqwest::StatusCode) -> CliError,
     ) -> Result<Value, CliError> {
+        let (status, text) = self.send(query, variables, operation_name)?;
+        self.read_reply(status, &text, on_html)
+    }
+
+    /// [`execute`](Self::execute) for a sign-in window's confirm hook, where `Auth`
+    /// keeps the tab open and marks the token refused, so only a definite refusal may
+    /// be `Auth`. An ordinary read keeps taking an HTML page as `Auth`.
+    pub fn execute_in_window(
+        &self,
+        query: &str,
+        variables: Value,
+        operation_name: Option<&str>,
+    ) -> Result<Value, CliError> {
+        let (status, text) = self.send(query, variables, operation_name)?;
+        self.read_window_reply(status, &text)
+    }
+
+    /// Post the operation and return the answer as it came.
+    fn send(
+        &self,
+        query: &str,
+        variables: Value,
+        operation_name: Option<&str>,
+    ) -> Result<(reqwest::StatusCode, String), CliError> {
         let mut body = json!({ "query": query, "variables": variables });
         if let Some(name) = operation_name {
             body["operationName"] = json!(name);
@@ -217,7 +241,25 @@ impl M1Client {
         let resp = req.json(&body).send()?;
         let status = resp.status();
         let text = resp.text()?;
-        self.read_reply(status, &text, on_html)
+        Ok((status, text))
+    }
+
+    /// [`read_reply`](Self::read_reply) as a sign-in window's confirm hook takes it. A
+    /// 401 refuses the token whatever its body. An HTML page on any other status is
+    /// no verdict ([`html_in_window`]).
+    fn read_window_reply(
+        &self,
+        status: reqwest::StatusCode,
+        text: &str,
+    ) -> Result<Value, CliError> {
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && serde_json::from_str::<Value>(text).is_err()
+        {
+            return Err(CliError::Auth(format!(
+                "M1 rejected the session (HTTP {status})"
+            )));
+        }
+        self.read_reply(status, text, html_in_window)
     }
 
     /// What an answer says: its data, or the failure it carries.
@@ -456,6 +498,17 @@ fn html_error(status: reqwest::StatusCode) -> CliError {
          intervened or the session is no longer accepted; sign in again with `{}` (steps in \
          `m1f auth login --help`)",
         crate::auth0::RELOGIN
+    ))
+}
+
+/// The confirm hook's reading of an HTML answer: no verdict. Site storage goes before
+/// each window opens, so the token in the page was written by this sign-in moments ago,
+/// and a page from the edge says nothing about it. As `Auth` it would hold a signed-in
+/// tab open until the timeout and mark a live token refused.
+fn html_in_window(status: reqwest::StatusCode) -> CliError {
+    CliError::Upstream(format!(
+        "M1 answered the session check with an HTML page (HTTP {status}), most likely a \
+         Cloudflare bot check and no verdict on the session"
     ))
 }
 
@@ -907,6 +960,13 @@ pub(crate) mod tests {
         assert!(out.contains("<redacted>"));
     }
 
+    /// An answer as a sign-in window's confirm hook takes it, with no network.
+    pub(crate) fn window_answer(status: u16, body: &str) -> Result<Value, CliError> {
+        M1Client::anonymous("http://127.0.0.1:9", false)
+            .unwrap()
+            .read_window_reply(reqwest::StatusCode::from_u16(status).unwrap(), body)
+    }
+
     /// An answer as an ordinary read takes it, with no network: for the tests
     /// here and the browser capture's.
     pub(crate) fn read_answer(status: u16, body: &str) -> Result<Value, CliError> {
@@ -920,7 +980,7 @@ pub(crate) mod tests {
     }
 
     /// A throttle or an outage is no verdict on the session, whatever its body.
-    /// HTML on any other status still reads as a refusal.
+    /// On an ordinary read, HTML on any other status still reads as a refusal.
     #[test]
     fn a_throttle_or_an_outage_is_upstream_whatever_its_body() {
         const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";

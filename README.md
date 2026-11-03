@@ -48,14 +48,19 @@ m1f auth status
 
 `--browser` opens a Chrome window at <https://dashboard.m1.com>, in a profile
 `m1f` keeps between sign-ins. Sign in there as usual; your password and any
-emailed code go to M1's page, never to `m1f`. Once M1 accepts the session in the
-page, `m1f` takes it out of the page, closes the tab at once (so the web app
+emailed code go to M1's page, never to `m1f`. Once the page holds a session M1 does
+not refuse, `m1f` takes it out of the page, closes the tab at once (so the web app
 cannot rotate the refresh token it just handed over) and quits Chrome. The wait
 is up to 10 minutes and Ctrl-C cancels. If Chrome is installed somewhere unusual,
 point `M1F_CHROME` at its binary. To replace a stored session, add `--overwrite`.
 
 `m1f` checks the session with one read (`viewer.isAuthenticated`) before it
-stores anything, then renews it on its own.
+stores anything, then renews it on its own. If M1 refuses it, the window stays open
+for a new sign-in. If the read cannot decide (a bot check, M1 throttled or down), `m1f`
+stores the session anyway, since the page held the only copy, exits 0, and warns even
+under `-q` that it is unverified; `--json` adds `verified: false`. If reads then keep
+failing, run `m1f auth login --browser
+--overwrite`.
 
 The kept profile lets M1 remember this device, so a later sign-in often needs no
 password, code or bot check: the window opens, the session is read and the window
@@ -79,8 +84,8 @@ second Ctrl-C skips the second removal; the next launch or `m1f auth logout` cov
 it.
 
 The profile stays after a failed sign-in too, and every failure once the window
-has opened says so: a timeout, a closed window, Ctrl-C, M1 throttled or down during
-the check, a keychain write that fails. Those can leave a live session in it.
+has opened says so: a timeout, a closed window, Ctrl-C, a keychain write that fails.
+Those can leave a live session in it.
 `m1f auth status` says whether a profile is kept (`browser_profile` with `--json`),
 not whether anything is signed in there. `m1f auth logout` removes it
 and clears the stored session with it. It attempts every step even after one fails,

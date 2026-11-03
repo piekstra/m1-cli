@@ -29,8 +29,10 @@
 //!
 //! The session's tokens do not stay. The page keeps them in `localStorage`, so
 //! [`browser_launch`] turns on `clear_site_storage`. The capture only reads
-//! ([`crate::auth0::CAPTURE_EXPRESSION`]), and the tab closes only on a session M1
-//! accepts ([`confirm_candidate`]). docs/api.md, "The kept profile", has the detail.
+//! ([`crate::auth0::CAPTURE_EXPRESSION`]). The tab stays open on a session M1 refuses,
+//! and closes on one it accepts or one its read cannot decide on, which is stored
+//! unverified with a warning, because the page held the only copy
+//! ([`confirm_candidate`]). docs/api.md, "The kept profile", has the detail.
 //!
 //! **The password login** (the rest of this module's history, below) is kept
 //! for the day the edge lets it through again, and names the 403 trap when it
@@ -55,7 +57,7 @@
 //! can say a code is expected. Codes are rate-limited: one attempt, then read
 //! the error rather than retrying.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
 use pk_cli_browser::{BrowserArgs, BrowserError, Captured, Confirm, Launch, DEFAULT_TIMEOUT};
@@ -250,43 +252,95 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
         };
         bundle = auth0::refresh(&grant, &refresh, ctx.common.verbose)?;
     }
-    store_session(ctx, args, &bundle)
+    store_session(ctx, args, &bundle, None)
 }
 
-/// The one check and the one keychain item both routes share.
-fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result<(), CliError> {
+/// The one check and the one keychain item both routes share. `unverified` is why the
+/// confirm hook's read could not decide on a session from the window, if it could not.
+fn store_session(
+    ctx: &Ctx,
+    args: &LoginCmdArgs,
+    bundle: &TokenBundle,
+    unverified: Option<&str>,
+) -> Result<(), CliError> {
     prove_then_store(args, bundle, |b| verify(ctx, b), |b| ctx.store_login(b))?;
     ctx.clear_pending()?;
-    if !ctx.common.quiet {
-        let renewal = if bundle.refresh_token.is_some() {
-            "it renews itself with its refresh token"
+    let renewal = if bundle.refresh_token.is_some() {
+        "it renews itself with its refresh token"
+    } else {
+        "no refresh token came with it, so it lasts until the access token expires"
+    };
+    // The browser route closed its tab and Chrome itself, and may leave a
+    // profile; a copied session may still be held by the window it was
+    // copied from.
+    let close = if args.browser.browser {
+        if keeps_profile(scratch_profile(ctx.creds, args)) {
+            " The browser profile, with M1's cookies in it, stays on disk for the next \
+             sign-in; `m1f auth logout` removes it."
         } else {
-            "no refresh token came with it, so it lasts until the access token expires"
-        };
-        let how = if args.base.no_verify {
+            ""
+        }
+    } else {
+        " If you copied it from a browser you keep using, close that window now (see `m1f \
+         auth login --help`)."
+    };
+    let stored =
+        |how: &str| format!("M1 browser session {how} in the OS keychain; {renewal}.{close}");
+    for note in stored_notes(ctx.common.quiet, args.base.no_verify, unverified, stored) {
+        eprintln!("{note}");
+    }
+    let status = status_dto(ctx, Some(bundle), ctx.cfg.username.as_deref());
+    if ctx.common.json {
+        output::json(&login_result(&status, unverified.is_some()));
+    } else {
+        status.emit(false);
+    }
+    Ok(())
+}
+
+/// The login result under `--json`: `auth-status/v1`, with `verified: false` on a
+/// session its one read could not decide on. Absent on a verified login, so it is
+/// additive.
+fn login_result(status: &AuthStatus, unverified: bool) -> Value {
+    let mut result = status.to_json();
+    if unverified {
+        result["verified"] = json!(false);
+    }
+    result
+}
+
+/// What a stored session says on stderr. The warning comes under `-q` too: nothing
+/// has shown that session works.
+fn stored_notes(
+    quiet: bool,
+    no_verify: bool,
+    unverified: Option<&str>,
+    stored: impl FnOnce(&str) -> String,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if let Some(why) = unverified {
+        notes.push(format!("warning: {}", unverified_warning(why)));
+    }
+    if !quiet {
+        notes.push(stored(if no_verify || unverified.is_some() {
             "stored (unverified)"
         } else {
             "verified and stored"
-        };
-        // The browser route closed its tab and Chrome itself, and may leave a
-        // profile; a copied session may still be held by the window it was
-        // copied from.
-        let close = if args.browser.browser {
-            if keeps_profile(scratch_profile(ctx.creds, args)) {
-                " The browser profile, with M1's cookies in it, stays on disk for the next \
-                 sign-in; `m1f auth logout` removes it."
-            } else {
-                ""
-            }
-        } else {
-            " If you copied it from a browser you keep using, close that window now (see `m1f \
-             auth login --help`)."
-        };
-        eprintln!("M1 browser session {how} in the OS keychain; {renewal}.{close}");
+        }));
     }
-    let status = status_dto(ctx, Some(bundle), ctx.cfg.username.as_deref());
-    status.emit(ctx.common.json);
-    Ok(())
+    notes
+}
+
+/// `auth status` makes no request, so it is not what tests the session. An answer such
+/// as an HTML 403 or an empty 2xx can repeat on every later read, and then only a new
+/// sign-in gets past it, so this names that way out.
+fn unverified_warning(why: &str) -> String {
+    format!(
+        "the sign-in is kept, but its session is stored unverified: {}. A later read, such as \
+         `m1f accounts list`, may settle it; if reads keep failing, run `{}`.",
+        why.trim_end_matches('.'),
+        auth0::RELOGIN
+    )
 }
 
 /// A piped session gets its read here. A session from the window has had its read:
@@ -321,7 +375,13 @@ fn remember_username(
 }
 
 fn refuse_overwrite(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
-    if ctx.tokens()?.is_some() && !args.base.overwrite {
+    refuse_stored(ctx.tokens()?.is_some(), args.base.overwrite)
+}
+
+/// With a session stored and no `--overwrite`, a sign-in is refused before Chrome opens,
+/// so an unverified session never replaces a stored one without the flag.
+fn refuse_stored(stored: bool, overwrite: bool) -> Result<(), CliError> {
+    if stored && !overwrite {
         return Err(CliError::Usage(
             "already logged in; pass --overwrite to replace the stored session".into(),
         ));
@@ -330,7 +390,7 @@ fn refuse_overwrite(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
 }
 
 /// `--browser`: open a Chrome window at the dashboard, wait until it holds a
-/// session M1 accepts, and read it out ([`auth0::browser_capture`]). The tab
+/// session M1 does not refuse, and read it out ([`auth0::browser_capture`]). The tab
 /// closes the moment the session is read, then Chrome quits. Its profile stays
 /// for the next sign-in, unless a scratch one was asked for
 /// ([`scratch_profile`]).
@@ -344,20 +404,28 @@ fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
     let endpoint = ctx.cfg.base_url();
     let verbose = ctx.common.verbose;
     let no_verify = args.base.no_verify;
-    let refused = Mutex::new(None);
+    let memory = Arc::new(WindowMemory::default());
+    let hook_memory = Arc::clone(&memory);
     let capture = auth0::browser_capture()?.confirm(move |candidate| {
-        confirm_candidate(candidate, &refused, |bundle| {
+        confirm_candidate(candidate, &hook_memory, |bundle| {
             if no_verify {
                 Ok(())
             } else {
-                read_viewer(&endpoint, verbose, bundle)
+                read_in_window(&endpoint, verbose, bundle)
             }
         })
     });
     through_the_window(
         scratch,
         || pk_cli_browser::capture(launch, &capture, DEFAULT_TIMEOUT),
-        |bundle| store_session(ctx, args, &bundle),
+        |bundle| {
+            let unverified = memory
+                .unverified
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            store_session(ctx, args, &bundle, unverified.as_deref())
+        },
     )
 }
 
@@ -468,12 +536,18 @@ fn reworded(error: CliError, say: impl FnOnce(String) -> String) -> CliError {
 /// Auth0 answers the second use of a refresh token by revoking the whole family.
 /// A token M1 refused is remembered with what M1 said and not sent again, so a tab
 /// sitting on a dead session costs one read rather than one per poll, and the timeout
-/// names the cause: a Cloudflare block reads as one, not as a dead session. A read
-/// that cannot decide ends the wait and takes nothing: a throttle, M1 down, or an
-/// answer with no verdict in it.
+/// names the cause. Only a definite refusal reads as `Auth` here: a 401, or M1's own
+/// JSON ([`read_in_window`]).
+///
+/// A read that cannot decide takes the session unverified: a throttle, M1 down, a
+/// dropped connection, a Cloudflare page, or an answer with no verdict in it. Site
+/// storage goes again once Chrome stops, so the page holds the only copy, and it can
+/// only be this sign-in's. A bad one costs one more sign-in, the same as discarding it,
+/// and a good one costs none. [`refuse_overwrite`] has already run, so it cannot replace
+/// a stored session without `--overwrite`.
 fn confirm_candidate(
     candidate: &Captured,
-    refused: &Mutex<Option<Refused>>,
+    memory: &WindowMemory,
     prove: impl FnOnce(&TokenBundle) -> Result<(), CliError>,
 ) -> Confirm {
     let Some(value) = candidate.value() else {
@@ -488,7 +562,7 @@ fn confirm_candidate(
             "the session this window holds has expired, and no new sign-in has finished".into(),
         );
     }
-    let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
+    let mut refused = memory.refused.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(earlier) = refused
         .as_ref()
         .filter(|earlier| earlier.token.expose() == bundle.access_token)
@@ -504,8 +578,23 @@ fn confirm_candidate(
             });
             Confirm::NotYet(reason)
         }
-        Err(e) => Confirm::Fail(e),
+        Err(inconclusive) => {
+            let why = match inconclusive {
+                CliError::Upstream(m) | CliError::Other(m) => m,
+                other => other.to_string(),
+            };
+            *memory.unverified.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            Confirm::Ready
+        }
     }
+}
+
+/// What the confirm hook remembers across polls and hands on: the token M1 refused,
+/// and why the read could not decide on the session it took.
+#[derive(Default)]
+struct WindowMemory {
+    refused: Mutex<Option<Refused>>,
+    unverified: Mutex<Option<String>>,
 }
 
 /// A token M1 refused, and what it said.
@@ -527,20 +616,39 @@ fn chrome_not_found(why: &str) -> CliError {
 /// One authenticated read: `viewer.isAuthenticated` must be `true`. M1
 /// answers `false` — not an error — for a token it does not accept.
 fn verify(ctx: &Ctx, bundle: &TokenBundle) -> Result<(), CliError> {
-    read_viewer(&ctx.cfg.base_url(), ctx.common.verbose, bundle)
-}
-
-/// [`verify`] without the [`Ctx`], so the capture's confirm hook can own what
-/// it needs. Bounded by the HTTP client's 60 s timeout, which also bounds the
-/// hook.
-fn read_viewer(endpoint: &str, verbose: bool, bundle: &TokenBundle) -> Result<(), CliError> {
-    let client = M1Client::new(endpoint, Some(bundle.access_token.clone()), verbose)?;
+    let client = M1Client::new(
+        &ctx.cfg.base_url(),
+        Some(bundle.access_token.clone()),
+        ctx.common.verbose,
+    )?;
     let data = client.execute(
         graphql::VIEWER_IS_AUTHENTICATED,
         json!({}),
         Some("ViewerIsAuthenticated"),
     )?;
+    piped_verdict(&data)
+}
+
+/// [`verify`] as the capture's confirm hook reads, without the [`Ctx`] so the hook
+/// can own what it needs: an HTML page is no verdict here
+/// ([`M1Client::execute_in_window`]). Bounded by the HTTP client's 60 s timeout, which
+/// also bounds the hook.
+fn read_in_window(endpoint: &str, verbose: bool, bundle: &TokenBundle) -> Result<(), CliError> {
+    let client = M1Client::new(endpoint, Some(bundle.access_token.clone()), verbose)?;
+    let data = client.execute_in_window(
+        graphql::VIEWER_IS_AUTHENTICATED,
+        json!({}),
+        Some("ViewerIsAuthenticated"),
+    )?;
     verdict(&data)
+}
+
+/// [`verdict`] for a session that is stored only if its read proves it.
+fn piped_verdict(data: &Value) -> Result<(), CliError> {
+    verdict(data).map_err(|e| match e {
+        CliError::Upstream(m) => CliError::Upstream(format!("{m}. Nothing was stored.")),
+        other => other,
+    })
 }
 
 /// The verification read's answer. Pure, so the three branches are tested.
@@ -554,7 +662,7 @@ fn verdict(data: &Value) -> Result<(), CliError> {
         ))),
         _ => Err(CliError::Upstream(
             "M1's answer to the session check had no `viewer.isAuthenticated` — the shape may \
-             have changed (see docs/api.md). Nothing was stored."
+             have changed (see docs/api.md)"
                 .into(),
         )),
     }
@@ -1170,6 +1278,10 @@ mod tests {
         );
         let odd = verdict(&json!({ "viewer": {} })).unwrap_err();
         assert_eq!(odd.exit_code(), 5);
+        assert!(!odd.to_string().contains("Nothing was stored"), "{odd}");
+        let piped = piped_verdict(&json!({ "viewer": {} })).unwrap_err();
+        assert_eq!(piped.exit_code(), 5);
+        assert!(piped.to_string().contains("Nothing was stored"), "{piped}");
     }
 
     /// The browser route stores what the piped route stores for the same
@@ -1211,8 +1323,8 @@ mod tests {
     #[test]
     fn an_expired_session_keeps_the_tab_open() {
         let expired = crate::auth0::tests::jwt(crate::auth0::tests::m1_claims(1));
-        let refused = Mutex::new(None);
-        let answer = confirm_candidate(&held(&expired), &refused, |_| {
+        let memory = WindowMemory::default();
+        let answer = confirm_candidate(&held(&expired), &memory, |_| {
             panic!("an expired session must not reach M1")
         });
         match answer {
@@ -1223,8 +1335,8 @@ mod tests {
 
     #[test]
     fn a_session_m1_accepts_closes_the_tab() {
-        let refused = Mutex::new(None);
-        let answer = confirm_candidate(&held(&live_token()), &refused, |_| Ok(()));
+        let memory = WindowMemory::default();
+        let answer = confirm_candidate(&held(&live_token()), &memory, |_| Ok(()));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
     }
 
@@ -1239,10 +1351,10 @@ mod tests {
             reads.set(reads.get() + 1);
             answer
         };
-        let refused = Mutex::new(None);
+        let memory = WindowMemory::default();
         let dead = live_token();
         for _ in 0..3 {
-            let answer = confirm_candidate(&held(&dead), &refused, |_| {
+            let answer = confirm_candidate(&held(&dead), &memory, |_| {
                 prove(Err(CliError::Auth("dummy refusal".into())))
             });
             match answer {
@@ -1253,30 +1365,199 @@ mod tests {
         assert_eq!(reads.get(), 1, "the dead token was sent again");
 
         let renewed = crate::auth0::tests::jwt(crate::auth0::tests::m1_claims(4_102_444_801));
-        let answer = confirm_candidate(&held(&renewed), &refused, |_| prove(Ok(())));
+        let answer = confirm_candidate(&held(&renewed), &memory, |_| prove(Ok(())));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(reads.get(), 2);
     }
 
-    /// A Cloudflare block on the hook's read names itself, on every poll, so the
-    /// timeout does not call a signed-in tab a dead session.
+    /// A Cloudflare page on the hook's read keeps the sign-in: one read, no refused
+    /// token, the session stored, and a warning that names the bot check and the way
+    /// out, with nothing that calls a session this window just made a dead one.
     #[test]
-    fn a_403_html_answer_keeps_its_reason() {
+    fn an_html_answer_stores_the_session_and_warns() {
         const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
-        let refused = Mutex::new(None);
         let token = live_token();
-        for _ in 0..2 {
-            let answer = confirm_candidate(&held(&token), &refused, |_| {
-                crate::client::tests::read_answer(403, PAGE).map(|_| ())
+        for status in [200, 403] {
+            let memory = WindowMemory::default();
+            let reads = std::cell::Cell::new(0);
+            let answer = confirm_candidate(&held(&token), &memory, |_| {
+                reads.set(reads.get() + 1);
+                crate::client::tests::window_answer(status, PAGE).map(|_| ())
             });
-            match answer {
-                Confirm::NotYet(reason) => {
-                    assert!(reason.contains("HTTP 403"), "{reason}");
-                    assert!(reason.contains("Cloudflare bot check"), "{reason}");
-                }
-                other => panic!("must keep waiting: {other:?}"),
+            assert!(matches!(answer, Confirm::Ready), "{status}: {answer:?}");
+            assert_eq!(reads.get(), 1);
+            assert!(memory.refused.lock().unwrap().is_none(), "{status}");
+            assert_eq!(stored_through_the_window(&token), token);
+
+            let why = memory.unverified.lock().unwrap().take().unwrap();
+            let warning = unverified_warning(&why);
+            assert!(warning.contains(&format!("HTTP {status}")), "{warning}");
+            assert!(warning.contains("Cloudflare bot check"), "{warning}");
+            assert!(warning.contains("stored unverified"), "{warning}");
+            assert!(
+                warning
+                    .contains("if reads keep failing, run `m1f auth login --browser --overwrite`"),
+                "{warning}"
+            );
+            for dead in [
+                "refused",
+                "lapsed",
+                "expired",
+                "dead",
+                "no longer accepted",
+                "Nothing was stored",
+            ] {
+                assert!(!warning.contains(dead), "{dead}: {warning}");
             }
         }
+    }
+
+    /// What the window route stores once the hook has said ready: `--browser` makes no
+    /// other read, so a read here fails the test.
+    fn stored_through_the_window(token: &str) -> String {
+        let mut stored = None;
+        through_the_window(
+            false,
+            || Ok(held(token)),
+            |bundle| {
+                prove_then_store(
+                    &login_args(&["--browser"]),
+                    &bundle,
+                    |_| panic!("the session was read twice"),
+                    |b| {
+                        stored = Some(b.access_token.clone());
+                        Ok(())
+                    },
+                )
+            },
+        )
+        .unwrap();
+        stored.unwrap()
+    }
+
+    /// The warning comes under `-q`, and says why. The stored line follows `-q`.
+    #[test]
+    fn the_unverified_warning_prints_under_quiet() {
+        let stored = |how: &str| format!("dummy line: {how}");
+        let quiet = stored_notes(true, false, Some("dummy cause."), stored);
+        assert_eq!(quiet.len(), 1, "{quiet:?}");
+        assert!(quiet[0].starts_with("warning: "), "{quiet:?}");
+        assert!(
+            quiet[0].contains("stored unverified: dummy cause."),
+            "{quiet:?}"
+        );
+        assert!(quiet[0].contains("`m1f accounts list`"), "{quiet:?}");
+        assert!(!quiet[0].contains("auth status"), "{quiet:?}");
+
+        let loud = stored_notes(false, false, Some("dummy cause"), stored);
+        assert_eq!(loud.len(), 2, "{loud:?}");
+        assert_eq!(loud[1], "dummy line: stored (unverified)");
+
+        assert!(stored_notes(true, false, None, stored).is_empty());
+        assert_eq!(
+            stored_notes(false, false, None, stored),
+            ["dummy line: verified and stored"]
+        );
+        assert_eq!(
+            stored_notes(false, true, None, stored),
+            ["dummy line: stored (unverified)"]
+        );
+    }
+
+    /// `verified: false` is additive: on a verified login the field is absent, and
+    /// nothing else in the result differs.
+    #[test]
+    fn the_result_says_verified_false_only_when_it_is_unverified() {
+        let status = AuthStatus::new(true, true, AuthMethod::BrowserSession);
+        let proved = login_result(&status, false);
+        assert!(proved.get("verified").is_none(), "{proved}");
+        assert_eq!(proved, status.to_json());
+        assert_eq!(proved["schema"], "auth-status/v1");
+
+        let mut unproved = login_result(&status, true);
+        assert_eq!(unproved["verified"], json!(false), "{unproved}");
+        unproved.as_object_mut().unwrap().remove("verified");
+        assert_eq!(unproved, proved);
+    }
+
+    /// With a session stored and no `--overwrite`, the sign-in stops before Chrome.
+    #[test]
+    fn a_stored_session_is_refused_without_overwrite() {
+        let err = refuse_stored(true, false).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{err}");
+        assert!(err.to_string().contains("--overwrite"), "{err}");
+        refuse_stored(true, true).unwrap();
+        refuse_stored(false, false).unwrap();
+        refuse_stored(false, true).unwrap();
+    }
+
+    /// One answer on a loopback port, as M1's endpoint.
+    fn answering_once(status_line: &'static str, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..read]);
+                let text = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status_line}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        url
+    }
+
+    /// The hook's own read over HTTP, so it stays the window's reading and not an
+    /// ordinary read's: a Cloudflare page is no verdict, and a 401 is remembered as a
+    /// refusal and not sent again.
+    #[test]
+    fn the_hooks_read_tells_a_bot_check_from_a_refusal() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+        let token = live_token();
+        for status_line in ["200 OK", "403 Forbidden"] {
+            let url = answering_once(status_line, PAGE);
+            let memory = WindowMemory::default();
+            let answer = confirm_candidate(&held(&token), &memory, |bundle| {
+                read_in_window(&url, false, bundle)
+            });
+            assert!(
+                matches!(answer, Confirm::Ready),
+                "{status_line}: {answer:?}"
+            );
+            assert!(memory.refused.lock().unwrap().is_none(), "{status_line}");
+            let why = memory.unverified.lock().unwrap().take().unwrap();
+            assert!(why.contains("Cloudflare bot check"), "{why}");
+        }
+
+        let url = answering_once("401 Unauthorized", r#"{"message":"dummy refusal"}"#);
+        let memory = WindowMemory::default();
+        let answer = confirm_candidate(&held(&token), &memory, |bundle| {
+            read_in_window(&url, false, bundle)
+        });
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        assert!(memory.refused.lock().unwrap().is_some());
+        assert!(memory.unverified.lock().unwrap().is_none());
+        let answer = confirm_candidate(&held(&token), &memory, |_| {
+            panic!("the refused token was sent again")
+        });
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
     }
 
     fn login_args(flags: &[&str]) -> LoginCmdArgs {
@@ -1347,27 +1628,30 @@ mod tests {
         assert!(stored);
     }
 
+    /// A dropped connection says nothing about the session.
     #[test]
-    fn a_failure_waiting_will_not_fix_ends_the_wait() {
-        let refused = Mutex::new(None);
-        let answer = confirm_candidate(&held(&live_token()), &refused, |_| {
-            Err(CliError::Upstream("dummy outage".into()))
+    fn a_dropped_connection_keeps_the_sign_in() {
+        let memory = WindowMemory::default();
+        let answer = confirm_candidate(&held(&live_token()), &memory, |_| {
+            Err(CliError::Upstream("dummy dropped connection".into()))
         });
-        match answer {
-            Confirm::Fail(e) => assert_eq!(e.exit_code(), 5),
-            other => panic!("must end the wait: {other:?}"),
-        }
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+        assert!(memory.refused.lock().unwrap().is_none());
+        assert_eq!(
+            memory.unverified.lock().unwrap().as_deref(),
+            Some("dummy dropped connection")
+        );
     }
 
     #[test]
     fn a_window_with_nothing_readable_keeps_waiting() {
-        let refused = Mutex::new(None);
+        let memory = WindowMemory::default();
         let none = Captured::for_test("M1", crate::auth0::DASHBOARD_HOST).build();
         let junk = Captured::for_test("M1", crate::auth0::DASHBOARD_HOST)
             .value("not a session")
             .build();
         for candidate in [none, junk] {
-            let answer = confirm_candidate(&candidate, &refused, |_| panic!("nothing to read yet"));
+            let answer = confirm_candidate(&candidate, &memory, |_| panic!("nothing to read yet"));
             assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
         }
     }
@@ -1662,64 +1946,118 @@ mod tests {
         }
     }
 
-    /// The hook against real answers: a throttle or an outage ends the wait
-    /// rather than loop on it, a refusal keeps the tab open, and only a `true`
-    /// closes it. Neither of the first two is remembered as a refused token.
-    #[test]
-    fn a_read_that_cannot_decide_ends_the_wait_and_accepts_nothing() {
-        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
-        let read = |status: u16, body: &str| {
-            crate::client::tests::read_answer(status, body).and_then(|data| verdict(&data))
-        };
-        let accepted = r#"{"data":{"viewer":{"isAuthenticated":true}}}"#;
-        let declined = r#"{"data":{"viewer":{"isAuthenticated":false}}}"#;
-        let token = live_token();
+    const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title></html>";
+    const ACCEPTED: &str = r#"{"data":{"viewer":{"isAuthenticated":true}}}"#;
 
+    /// The hook's read of an answer, the window's way.
+    fn hooks_read(status: u16, body: &str) -> Result<(), CliError> {
+        crate::client::tests::window_answer(status, body).and_then(|data| verdict(&data))
+    }
+
+    /// The hook against answers that cannot decide: each ends the wait with the
+    /// session taken, on one read, and it is stored, with a warning that names the
+    /// cause. None is remembered as a refused token.
+    #[test]
+    fn each_inconclusive_answer_stores_warns_and_reads_once() {
+        let token = live_token();
         for (status, body) in [
             (429, PAGE),
             (429, "{}"),
-            (429, accepted),
+            (429, ACCEPTED),
             (500, "{}"),
             (502, "bad gateway"),
             (503, PAGE),
-            (503, accepted),
+            (503, ACCEPTED),
             (200, ""),
             (200, "null"),
             (200, "{}"),
+            (200, "{nope"),
             (200, r#"{"data":null}"#),
             (200, r#"{"data":{}}"#),
             (200, r#"{"data":{"viewer":null}}"#),
             (200, r#"{"data":{"viewer":{}}}"#),
             (200, r#"{"data":{"viewer":{"isAuthenticated":"true"}}}"#),
-        ] {
-            let refused = Mutex::new(None);
-            let answer = confirm_candidate(&held(&token), &refused, |_| read(status, body));
-            match answer {
-                Confirm::Fail(e) => assert_eq!(e.exit_code(), 5, "{status} {body}: {e}"),
-                other => panic!("{status} {body} must end the wait: {other:?}"),
-            }
-            assert!(refused.lock().unwrap().is_none(), "{status} {body}");
-        }
-
-        for (status, body) in [
-            (401, "{}"),
-            (403, "{}"),
-            (403, PAGE),
             (200, PAGE),
-            (200, declined),
+            (403, PAGE),
+            (404, PAGE),
+            (403, ""),
+            (403, "Forbidden"),
         ] {
-            let refused = Mutex::new(None);
-            let answer = confirm_candidate(&held(&token), &refused, |_| read(status, body));
+            let memory = WindowMemory::default();
+            let reads = std::cell::Cell::new(0);
+            let answer = confirm_candidate(&held(&token), &memory, |_| {
+                reads.set(reads.get() + 1);
+                hooks_read(status, body)
+            });
             assert!(
-                matches!(answer, Confirm::NotYet(_)),
+                matches!(answer, Confirm::Ready),
                 "{status} {body}: {answer:?}"
             );
-            assert!(refused.lock().unwrap().is_some(), "{status} {body}");
-        }
+            assert_eq!(reads.get(), 1, "{status} {body}");
+            assert!(memory.refused.lock().unwrap().is_none(), "{status} {body}");
+            assert_eq!(stored_through_the_window(&token), token, "{status} {body}");
 
-        let refused = Mutex::new(None);
-        let answer = confirm_candidate(&held(&token), &refused, |_| read(200, accepted));
+            let why = memory.unverified.lock().unwrap().take().unwrap();
+            let warning = unverified_warning(&why);
+            assert!(!warning.contains("Nothing was stored"), "{warning}");
+            assert!(
+                warning.contains("`m1f auth login --browser --overwrite`"),
+                "{warning}"
+            );
+        }
+    }
+
+    /// The hook against a definite refusal: a 401, or M1's own JSON. The tab stays
+    /// open, the token is not sent again, and nothing is stored unless a new sign-in
+    /// replaces it.
+    #[test]
+    fn a_definite_refusal_keeps_waiting_and_stores_nothing() {
+        let declined = r#"{"data":{"viewer":{"isAuthenticated":false}}}"#;
+        let not_authorized =
+            r#"{"errors":[{"isAuthError":true,"code":"AUTH_ERROR","message":"Not authorized."}]}"#;
+        let token = live_token();
+        for (status, body) in [
+            (401, "{}"),
+            (401, ""),
+            (401, "Unauthorized"),
+            (401, PAGE),
+            (403, "{}"),
+            (200, not_authorized),
+            (200, declined),
+        ] {
+            let memory = WindowMemory::default();
+            let answer = confirm_candidate(&held(&token), &memory, |_| hooks_read(status, body));
+            let reason = match answer {
+                Confirm::NotYet(reason) => reason,
+                other => panic!("{status} {body} must keep waiting: {other:?}"),
+            };
+            assert!(memory.refused.lock().unwrap().is_some(), "{status} {body}");
+            assert!(
+                memory.unverified.lock().unwrap().is_none(),
+                "{status} {body}"
+            );
+            let again = confirm_candidate(&held(&token), &memory, |_| {
+                panic!("{status} {body}: the refused token was sent again")
+            });
+            assert!(matches!(again, Confirm::NotYet(_)), "{again:?}");
+
+            through_the_window(
+                false,
+                || Err(BrowserError::TimedOut(reason)),
+                |_| panic!("{status} {body}: nothing is stored"),
+            )
+            .unwrap_err();
+        }
+    }
+
+    /// `true` is the only answer that closes the tab verified.
+    #[test]
+    fn only_a_true_is_verified() {
+        let memory = WindowMemory::default();
+        let answer =
+            confirm_candidate(&held(&live_token()), &memory, |_| hooks_read(200, ACCEPTED));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+        assert!(memory.unverified.lock().unwrap().is_none());
     }
 
     /// `M1F_KEYCHAIN_SERVICE` moves the keychain, not the profile: a logout under

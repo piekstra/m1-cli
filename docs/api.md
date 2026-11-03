@@ -134,10 +134,10 @@ synthetic copy of the shape.
    A pasted value it refuses is exit 2 with what to copy instead; a captured
    one is exit 5 naming what was wrong, since that means M1 changed how its
    web app keeps the session.
-3. One read, `viewer { isAuthenticated }`, must answer `true` before anything
-   is stored (`--no-verify` skips it). For `--browser` that read is the confirm
-   hook's, below. For a piped session an access token already expired is renewed
-   first.
+3. One read, `viewer { isAuthenticated }`. A piped session is stored only if it
+   answers `true` (`--no-verify` skips it), and an access token already expired is
+   renewed first. For `--browser` the read is the confirm hook's, below: a refusal
+   stores nothing, and an answer that cannot decide stores the session unverified.
 4. On an auth failure, a read renews the session at
    `https://account.m1.com/oauth/token` (`grant_type=refresh_token`,
    `client_id`, `refresh_token`, form-encoded, `Origin:
@@ -186,7 +186,7 @@ The mechanism is cli-common's `pk-cli-browser` (its DESIGN.md §2.2); what
 | Sign-in | The dashboard sends the owner to Auth0's page on `account.m1.com`: password and any emailed code are typed there, never into `m1f`. That host is never read from. |
 | Read from | Pages on exactly `dashboard.m1.com` (`HostRule::exact`): `https` on the default port, matched label by label, so `account.m1.com`, `m1.com` and look-alike hosts are not read. |
 | What is read | This expression, evaluated in those pages (`auth0::CAPTURE_EXPRESSION`): |
-| Ready when | The expression answers with a string (the cache entry for M1's API exists and holds an `access_token`) and the confirm hook accepts it: the reader takes it, its access token has not expired, and one `viewer.isAuthenticated` read answers `true` (no read with `--no-verify`; the expiry check still runs). A session it cannot decide on (M1 throttled or down) ends the wait; otherwise the capture keeps waiting (up to 10 minutes; Ctrl-C cancels). |
+| Ready when | The expression answers with a string (the cache entry for M1's API exists and holds an `access_token`) and the confirm hook accepts it: the reader takes it, its access token has not expired, and one `viewer.isAuthenticated` read does not refuse it (no read with `--no-verify`; the expiry check still runs). An answer that cannot decide takes the session unverified, with a warning (below); a refusal or an expired token keeps the capture waiting (up to 10 minutes; Ctrl-C cancels). |
 | Then | Every dashboard tab is closed at once and Chrome is stopped. The value goes through the same reader and into the same keychain item as a piped session, with no second read. |
 
 ```js
@@ -231,18 +231,37 @@ window therefore opens with no session in the page, and Auth0's cookie decides
 whether the owner has to sign in. The expression only reads.
 
 **The confirm hook judges what it read.** The tab stays open on an expired session,
-or one M1 refuses, until a new sign-in replaces it. The hook never renews: only a
+or one M1 refuses, until a new sign-in replaces it. A refusal has to be definite: a
+401, or M1's own JSON saying so (an auth error, `isAuthenticated: false`, a JSON 403).
+The hook never renews: only a
 copied session is renewed at login, and a captured refresh token is never presented.
 A refused token is remembered for the run with what M1 said, and not sent again, so a
 tab on a dead session costs one read rather than one per poll, and the timeout names
-the cause. A read that cannot decide ends the
-wait with an error and takes nothing: a 429 or a 5xx whatever its body, or an answer
-with no verdict in it. An HTML page on any other status counts as a refusal, since it
-may be either a bot check or a dead session; the tab stays open and that token is not
-sent again. `--browser --no-verify` skips this read; the expiry check still runs, and
-replacing a stored session still needs `--overwrite`.
+the cause.
 
-A confirmed capture gets that one read. Once the hook has said ready, Chrome has
+**An answer that cannot decide keeps the sign-in.** A 429 or a 5xx whatever its body, a
+dropped connection, an empty or unparseable body, an answer with no verdict in it, or
+an HTML page on any status but a 401 ends the wait at once with the session taken.
+`m1f` stores it, exits 0, and warns on stderr, under `-q` too. The warning names the
+cause (a bot check names itself), says the session is unverified, and says that if
+reads keep failing, `m1f auth login --browser --overwrite` is the way out. `--json` adds
+`verified: false` to the login result, which is absent on a verified login. The page held
+the only local copy and site storage goes when Chrome stops, so discarding the session
+would cost a new sign-in. Site storage also went before Chrome started, so a token in
+the page can only be this sign-in's: a bad one costs one more sign-in, the same as
+discarding it, and a good one costs none. An outage can clear by the next read; an HTML
+403 or an empty 2xx can repeat on every read, which is why the warning gives the way
+out. `refuse_overwrite` runs before the window, so an unverified session never replaces
+a stored one without `--overwrite`.
+
+**UNVERIFIED-LIVE:** a bot check on this read has not been seen. Reading an HTML page
+as no verdict rests on Trap 3 and Trap 7, not on a capture of this read.
+
+An ordinary read still takes an HTML page as exit 3 (Trap 3), and a piped session stores
+nothing on a read that did not prove it. `--browser --no-verify` skips this read; the
+expiry check still runs, and replacing a stored session still needs `--overwrite`.
+
+A capture gets that one read. Once the hook has said ready, Chrome has
 stopped and site storage is gone, so a 429, a 5xx or a dropped connection on another
 read would throw a finished sign-in away. A piped session has its read before the
 keychain write instead.
@@ -295,7 +314,9 @@ A Cloudflare challenge returns an HTML interstitial, not GraphQL. `m1f` detects
 a non-JSON body and reports it as an auth failure pointing at `m1f auth login`.
 Not seen live in this session, but the guard stays. A 429 or a 5xx is read by its
 status first, whatever its body, and is exit 5: a throttle or an outage says
-nothing about the session.
+nothing about the session. A browser sign-in's confirm hook takes an HTML page as no
+verdict instead and stores the session unverified (`client::html_in_window`, "An answer
+that cannot decide keeps the sign-in").
 
 ## Trap 4: M1 puts the error code at the TOP LEVEL, not under `extensions`
 
@@ -362,7 +383,8 @@ What `m1f` does with it:
   submission spends a lockout attempt for the same 403.
 - Every other HTML answer (a read, a legacy refresh) is exit 3 pointing at
   `m1f auth login --browser --overwrite` (`client::html_error`), except a 429 or a
-  5xx, which is exit 5 (Trap 3).
+  5xx, which is exit 5 (Trap 3), and the read a browser sign-in's confirm hook makes,
+  which stores the session unverified.
 - `info` reports `auth.method: browser-session` and `m1f auth login --browser`
   as the hint.
 

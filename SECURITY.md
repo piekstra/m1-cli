@@ -129,13 +129,19 @@ starts, where a failure refuses the launch, and again once Chrome has stopped. A
 or a second Ctrl-C skips the second removal, as does a Chrome still running in the
 profile. The tokens are then on disk until the next launch or `auth logout`, with only
 `0700` protecting them. The capture only reads. It refuses anything expired or that
-M1 does not accept, unless `--no-verify` skips that read, and `m1f` never renews from
-the window. A throttle or an outage during that check ends the wait with an error, and
-takes nothing.
+M1 refuses, unless `--no-verify` skips that read, and `m1f` never renews from the
+window. A bot check, a throttle or an outage during that check takes the session
+unverified, with a warning, as below.
+
+**A session its one read could not decide on is stored unverified.** A bot check, a
+throttle or an outage on that read does not discard the sign-in: the page held the only
+copy, and a token there can only be this sign-in's, since site storage goes before
+Chrome starts. `m1f` warns on stderr, under `-q` too, and such a session never replaces
+a stored one without `--overwrite`.
 
 **The profile outlives a failed sign-in.** However a sign-in fails once its window
-has opened (a timeout, a closed window, Ctrl-C, M1 throttled or down during the
-check, a keychain write that fails), the profile stays with what the sign-in got as
+has opened (a timeout, a closed window, Ctrl-C, a keychain write that fails), the
+profile stays with what the sign-in got as
 far as, which can be a live session in its cookies, and the error says so. `m1f auth
 status` says whether a profile is kept, not whether anything is signed in there.
 

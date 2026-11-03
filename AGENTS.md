@@ -89,9 +89,15 @@ render partial data as if it were complete.
   reports it as `browser_profile` through `browser_profile_status`, whose tests fill
   the seam with `profile_exists_in`. It says a profile is kept, not that anything is
   signed in there.
-- **A read that cannot decide ends the wait.** In `confirm_candidate` a 429 or a
-  5xx is `Confirm::Fail`, whatever its body (`client::read_reply` reads the status
-  before the HTML), and only `viewer.isAuthenticated: true` is `Ready`.
+- **A read that cannot decide keeps the sign-in.** In `confirm_candidate` only `Auth`
+  from `read_in_window` is a refusal (`NotYet`), and only a 401 or M1's own JSON is
+  `Auth` there: the hook reads through `M1Client::execute_in_window`, whose
+  `html_in_window` is not `Auth`. Anything else is `Ready` with its cause in
+  `WindowMemory::unverified`, `store_session` warns even under `-q` (`stored_notes`),
+  and `--json` adds `verified: false` (`login_result`). The page held the only copy, so
+  the session is stored. Ordinary
+  reads keep `html_error`, exit 3, and a piped session stores nothing unless its read
+  proves it.
 - **`auth logout` removes the kept profile, and no test may reach the real one.**
   Its removal goes through the `run_logout` seam: the binary binds
   `forget_profile(BIN)`, tests bind `forget_profile_in` under a temp dir

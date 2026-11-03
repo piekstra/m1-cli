@@ -36,11 +36,16 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
   them, is removed before Chrome starts and again once Chrome has stopped; after a
   crash or a second Ctrl-C, the next launch removes it. Its cookies stay, and Chrome
   now quits over its debug port, so a fresh one reaches the disk.
-- The capture now takes a session only once it has not expired and M1 accepts it
-  (`viewer.isAuthenticated`), and a session from the window is never renewed at
+- The capture now takes a session only once it has not expired and M1 has not refused
+  it (`viewer.isAuthenticated`), and a session from the window is never renewed at
   login. That is its one read: it goes straight to the keychain afterwards. A token M1
-  refused is not sent again, and a timeout says what M1 answered, so a Cloudflare block
-  names itself. A throttle or an outage during that check ends the wait with an error.
+  refused with a 401 or its own JSON is not sent again, and a timeout says what M1
+  answered.
+- If that read cannot decide (a Cloudflare page, a throttle, an outage, a dropped
+  connection, an answer with no verdict), the sign-in is kept: the session is stored,
+  the exit is 0, `--json` adds `verified: false`, and a warning says why, even under
+  `-q`, that it is unverified, and that
+  if reads keep failing, `m1f auth login --browser --overwrite` is the way out.
 - Before going back to an older release, run `m1f auth logout`. An older release does
   not know the kept profile and its logout leaves it behind; otherwise delete
   `~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under

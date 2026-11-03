@@ -125,13 +125,16 @@ enum AuthCmd {
     ///
     /// opens a Chrome window at https://dashboard.m1.com, in a profile m1f
     /// keeps between sign-ins. Sign in there as usual: the password and any
-    /// emailed code go to M1's page, never to m1f. Once M1 accepts the session
-    /// in the dashboard's localStorage, m1f reads it, closes the tab at once
-    /// (so the web app cannot rotate the refresh token it just handed over)
-    /// and quits Chrome. It checks the session with one read before storing
-    /// it, then renews it on its own. The wait is up to 10 minutes; Ctrl-C
-    /// cancels. Set M1F_CHROME to a Chrome binary that is not in a standard
-    /// place. Pass --overwrite to replace a stored session.
+    /// emailed code go to M1's page, never to m1f. Once the dashboard's
+    /// localStorage holds a session M1 does not refuse, m1f reads it, closes the
+    /// tab at once (so the web app cannot rotate the refresh token it just handed
+    /// over) and quits Chrome. It checks the session with one read before storing
+    /// it, then renews it on its own. If that read cannot decide (a bot check, M1
+    /// throttled or down), m1f stores the session anyway, since the page held the
+    /// only copy, and warns even under -q that it is unverified: if reads keep
+    /// failing, run `m1f auth login --browser --overwrite`. The wait is up to 10
+    /// minutes; Ctrl-C cancels. Set M1F_CHROME to a Chrome binary that is not in a
+    /// standard place. Pass --overwrite to replace a stored session.
     ///
     /// The kept profile (owner-only, on disk) lets M1 remember this device, so
     /// a later sign-in often needs no input: the window opens, the session is
