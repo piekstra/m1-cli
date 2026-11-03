@@ -1819,6 +1819,20 @@ mod tests {
         );
     }
 
+    /// Write `script` from a child process, so this process never holds it open for
+    /// writing. A fork on another test's thread keeps a copy of every descriptor open
+    /// here until it execs, and on Linux running a file with a write descriptor open
+    /// anywhere fails with ETXTBSY (os error 26).
+    #[cfg(unix)]
+    fn write_from_a_child(path: &std::path::Path, script: &str) {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "printf %s \"$1\" > \"$2\"", "sh", script])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "writing {}", path.display());
+    }
+
     /// A script that stands in for Chrome: it writes to the profile's site storage
     /// as a page would, reports a debug port and sleeps until stopped. It is what a
     /// launch runs in these tests, so the real lock and removals are exercised and no
@@ -1827,7 +1841,7 @@ mod tests {
     fn stand_in_chrome(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join("stand-in-chrome");
-        std::fs::write(
+        write_from_a_child(
             &path,
             "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --user-data-dir=*) \
              d=\"${a#--user-data-dir=}\";; esac; done\n\
@@ -1835,8 +1849,7 @@ mod tests {
              : > \"$d/Default/Local Storage/from-this-run\"\n\
              printf '1\\n/devtools/browser/dummy\\n' > \"$d/DevToolsActivePort\"\n\
              exec sleep 60\n",
-        )
-        .unwrap();
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
