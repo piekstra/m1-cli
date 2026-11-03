@@ -46,7 +46,7 @@ use pk_cli_core::{output, CliError};
 use pk_cli_secrets::Secret;
 use serde_json::{json, Value};
 
-use super::{emit, Ctx, TOKEN_ACCOUNT};
+use super::{emit, Ctx};
 use crate::client::{M1Client, PendingChallenge, TokenBundle};
 use crate::config::Config;
 use crate::{auth0, graphql};
@@ -181,7 +181,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
                 .into(),
         )
     })?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     let status = status_dto(ctx, Some(&bundle), Some(&username));
     status.emit(ctx.common.json);
@@ -235,7 +235,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
         }
         verify(ctx, &bundle)?;
     }
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     if !ctx.common.quiet {
         let renewal = if bundle.refresh_token.is_some() {
@@ -385,7 +385,7 @@ pub fn status(ctx: &Ctx) -> Result<(), CliError> {
 }
 
 pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), CliError> {
-    ctx.creds.delete(TOKEN_ACCOUNT)?;
+    ctx.forget_tokens()?;
     ctx.clear_pending()?;
     if args.forget {
         store.clear()?;
@@ -414,7 +414,7 @@ pub fn set_credential(ctx: &Ctx, args: &SetCredentialArgs) -> Result<(), CliErro
     }
     let secret = args.source.read(None)?;
     let bundle = parse_credential(secret.expose())?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     if !ctx.common.quiet {
         eprintln!("session stored in the OS keychain");
     }

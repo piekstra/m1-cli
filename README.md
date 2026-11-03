@@ -234,8 +234,18 @@ walks through the tunnel, the VPC service, a launchd agent that keeps the
 server running, and the `HOME_M1_TOKEN` secret, with the threat model.
 `--http` binds 127.0.0.1 only, refuses to start without the token, refuses
 any request whose `Host` is not loopback or that carries an `Origin`, and
-serves the read-only tools only. The session never leaves your computer.
-While the computer sleeps, the tools answer that it is offline.
+serves the read-only tools only. The session never leaves your computer, but
+tool results do: your balances, positions and activity pass through
+Cloudflare and reach Claude ([`SECURITY.md`](SECURITY.md)). While the computer
+sleeps, the tools answer that it is offline.
+
+After `m1f self-update`, restart the server: a running one keeps the old code,
+and its launchd agent restarts it only when it exits. Its start line names the
+version.
+
+```console
+$ launchctl kickstart -k gui/$(id -u)/com.piekstra.m1f-mcp-http
+```
 
 ## Tax documents
 
