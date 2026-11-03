@@ -98,9 +98,18 @@ impl Ctx<'_> {
     }
 
     /// Fail now if the lock a login's write needs is stuck or unusable, before
-    /// anyone signs in or a secret is read from stdin.
+    /// anyone signs in.
     pub fn before_signin(&self) -> Result<(), CliError> {
         RefreshLock::for_binary(crate::BIN)?.before_signin()
+    }
+
+    /// Fail now if the lock cannot be used at all, before a secret is read from a
+    /// pipe. It does not wait on a busy one, so bad input still fails at once;
+    /// [`Self::store_login`] does the waiting.
+    pub fn lock_usable(&self) -> Result<(), CliError> {
+        RefreshLock::for_binary(crate::BIN)?
+            .try_hold(|| Ok(()))
+            .map(drop)
     }
 
     /// Store a session a login obtained, under the lock a renewal holds, so a

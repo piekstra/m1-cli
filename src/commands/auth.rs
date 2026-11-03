@@ -108,8 +108,8 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
         ));
     }
 
-    ctx.before_signin()?;
     let username = resolve_username(ctx, args)?;
+    ctx.before_signin()?;
     let prompt = if args.base.non_interactive {
         None
     } else if args.code.is_some() {
@@ -218,7 +218,7 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
             )));
         }
         // Before the read: a session piped in once cannot be read again.
-        ctx.before_signin()?;
+        ctx.lock_usable()?;
         // The pasted session is input: read and check it before the keychain.
         let raw = args.base.source.read(None)?;
         let bundle = auth0::parse_captured(raw.expose())?;
@@ -416,7 +416,7 @@ pub fn set_credential(ctx: &Ctx, args: &SetCredentialArgs) -> Result<(), CliErro
             "a session is already stored; pass --overwrite to replace it".into(),
         ));
     }
-    ctx.before_signin()?;
+    ctx.lock_usable()?;
     let secret = args.source.read(None)?;
     let bundle = parse_credential(secret.expose())?;
     ctx.store_login(&bundle)?;
