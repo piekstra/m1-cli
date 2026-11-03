@@ -315,9 +315,9 @@ fn stored_unread(no_verify: bool, unverified: Option<&Undecided>) -> bool {
 /// `true` when a read accepted the session and `false` otherwise. A sometimes-absent
 /// field would make `jq '.verified == true'` wrong on the common case.
 fn login_result(status: &AuthStatus, verified: bool) -> Value {
-    let mut result = status.to_json();
-    result["verified"] = json!(verified);
-    result
+    let mut result = status.clone();
+    result.verified = Some(verified);
+    result.to_json()
 }
 
 /// The login result of a route that makes no read: the password login, where none
@@ -1530,6 +1530,34 @@ mod tests {
         unproved.as_object_mut().unwrap().remove("verified");
         assert_eq!(proved, status.to_json());
         assert_eq!(unproved, status.to_json());
+    }
+
+    /// Only a login sets `verified`. `auth status` makes no read, so it leaves it off,
+    /// and building its status reads no keychain.
+    #[test]
+    fn auth_status_leaves_verified_off() {
+        let common = pk_cli_core::CommonArgs::default();
+        let cfg = Config::default();
+        let creds = CredentialStore::new("m1f-dummy-service");
+        let ctx = Ctx {
+            common: &common,
+            cfg: &cfg,
+            creds: &creds,
+            account_override: None,
+        };
+        let bundle = crate::auth0::parse_browser_capture(
+            &crate::auth0::tests::cache_entry(&live_token()).to_string(),
+        )
+        .unwrap();
+        for status in [
+            status_dto(&ctx, Some(&bundle), None),
+            status_dto(&ctx, None, None),
+        ] {
+            assert_eq!(status.verified, None);
+            let shape = status.to_json();
+            assert!(shape.get("verified").is_none(), "{shape}");
+            assert_eq!(login_result(&status, true)["verified"], json!(true));
+        }
     }
 
     #[test]

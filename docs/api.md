@@ -277,7 +277,8 @@ proven. It is `false` for `--browser` on a read that could not decide, `--no-ver
 `--browser` or `--browser-session`, `auth set-credential`, and the password login, where no
 read follows M1's `Authenticate` answer. `auth status` does not carry it. The family's
 login result is `auth-login/v1`, and a CLI whose login already answers with its own schema
-adds `verified` there, which is what `m1f` does
+adds `verified` there. `m1f` does that with `AuthStatus::verified`, the optional field
+cli-common released in v0.20.0
 ([cli-common #53](https://github.com/piekstra/cli-common/pull/53), DESIGN.md §1.4).
 
 A capture gets that one read. Once the hook has said ready, Chrome has

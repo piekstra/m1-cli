@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.19.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.20.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -95,7 +95,8 @@ render partial data as if it were complete.
   `Auth` there: the hook reads through `M1Client::execute_in_window`, whose
   `edge_in_window` is not `Auth`. Anything else is `Ready` with its cause in
   `WindowMemory::unverified`, `store_session` warns even under `-q` (`stored_notes`),
-  and the `--json` result says `verified: false` (`login_result`, always a boolean), as
+  and the `--json` result says `verified: false` (`login_result`, which sets
+  `AuthStatus::verified`, always a boolean there and left off `auth status`), as
   it does for `--no-verify` (`stored_unread`), `auth set-credential` and the password
   login. The page held the only copy, so the session is stored. Ordinary reads keep
   `html_error`, exit 3, and a piped session stores nothing unless its read proves it.

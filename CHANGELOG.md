@@ -3,7 +3,7 @@
 ## v0.6.0 — 2026-11-03
 
 A browser sign-in now runs in a profile `m1f` keeps, where it used to run in a
-scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
+scratch profile deleted after every sign-in. Moves to cli-common v0.20.0.
 
 - `m1f auth login --browser` keeps its Chrome profile on disk, owner-only
   (`0700`), at `~/Library/Application Support/piekstra.m1f/browser-profile` on
@@ -57,7 +57,8 @@ scratch profile deleted after every sign-in. Moves to cli-common v0.19.0.
   read accepted the session and `false` otherwise. `--no-verify` on `--browser` or
   `--browser-session` and the password login say `false`. So does `auth set-credential`,
   which printed no result under `--json` before and now prints this one; its stderr line
-  now says the session is stored unverified.
+  now says the session is stored unverified. The field is cli-common's
+  `AuthStatus::verified`, and `auth status` leaves it off.
 - Before going back to an older release, run `m1f auth logout`. An older release does
   not know the kept profile and its logout leaves it behind; otherwise delete
   `~/Library/Application Support/piekstra.m1f/browser-profile` (on Linux, under
