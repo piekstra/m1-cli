@@ -261,8 +261,22 @@ walks through the tunnel, the VPC service, a launchd agent that keeps the
 server running, and the `HOME_M1_TOKEN` secret, with the threat model.
 `--http` binds 127.0.0.1 only, refuses to start without the token, refuses
 any request whose `Host` is not loopback or that carries an `Origin`, and
-serves the read-only tools only. The session never leaves your computer.
-While the computer sleeps, the tools answer that it is offline.
+serves the read-only tools only. The session never leaves your computer, but
+tool results do: your balances, positions and activity pass through
+Cloudflare and reach Claude ([`SECURITY.md`](SECURITY.md)). While the computer
+sleeps, the tools answer that it is offline.
+
+After `m1f self-update`, restart the server: a running one keeps the old code,
+and its launchd agent restarts it only when it exits. Its start line names the
+version.
+
+```console
+$ launchctl kickstart -k gui/$(id -u)/com.piekstra.m1f-mcp-http
+```
+
+`self-update` does not reach a Claude Desktop extension, which runs its own copy.
+Install the new release's `.mcpb` too. A server or extension on an older version
+renews without the lock the others use, which can cost a sign-in.
 
 ## Tax documents
 
@@ -287,11 +301,11 @@ M1 keeps only the **last ~3 years** of statements self-serve, so an annual
 | 2 | usage error |
 | 3 | auth required, or credentials invalid/expired |
 | 4 | not found |
-| 5 | upstream/provider error |
+| 5 | upstream/provider error, or another `m1f` process holding the token-refresh lock past the wait |
 | 6 | confirmation required |
 
-Scripts can branch on 3 ("run the login flow") and 5 ("M1 issue, retry later")
-without parsing messages.
+Scripts can branch on 3 ("run the login flow") and 5 ("M1 issue or a busy lock,
+retry later") without parsing messages.
 
 ## Security
 

@@ -161,6 +161,18 @@ The profile `--browser` keeps is a second holder, because the session stays in i
 `localStorage`: its refresh token is retired at `m1f`'s next renewal, and the next
 window can present it, which is the reuse that revokes the family (below).
 
+Every `m1f` process holds it too: the long-running `mcp --http` server, a stdio
+server and a terminal command share one keychain item. So a renewal runs under
+an exclusive lock on `~/.config/m1f/token-refresh.lock` (an empty file;
+`pk_cli_auth::refresh_lock`, whatever `--config` or `XDG_CONFIG_HOME` say). It
+reads the session again once it holds the lock, and if the stored refresh token
+is no longer the one behind the access token M1 refused, another process has
+renewed: it posts no grant and retries with that process's tokens. A wait is
+bounded at 75 s, then exit 5 naming the lock, with nothing sent. The lock only
+excludes copies that take it, so the protection starts once every copy is 0.5.2 or
+later, including a server not yet restarted and an installed Claude Desktop
+extension, which bundles its own binary.
+
 #### The browser capture (`auth login --browser`)
 
 The mechanism is cli-common's `pk-cli-browser` (its DESIGN.md §2.2); what

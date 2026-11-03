@@ -21,6 +21,25 @@ fn the_manifest_version_is_the_crate_version() {
     assert_eq!(manifest()["version"], env!("CARGO_PKG_VERSION"));
 }
 
+/// AGENTS.md names the spec's tag; a pin bump that forgets it leaves agents
+/// reading the wrong spec.
+#[test]
+fn agents_md_names_the_pinned_cli_common_tag() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let cargo = std::fs::read_to_string(format!("{root}/Cargo.toml")).unwrap();
+    let tag = cargo
+        .lines()
+        .find(|l| l.starts_with("pk-cli-core"))
+        .and_then(|l| l.split("tag = \"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .expect("pk-cli-core is pinned to a tag");
+    let agents = std::fs::read_to_string(format!("{root}/AGENTS.md")).unwrap();
+    assert!(
+        agents.contains(&format!("**{tag}**")),
+        "AGENTS.md does not name {tag}"
+    );
+}
+
 #[test]
 fn the_manifest_lists_exactly_the_served_tools() {
     let listed: Vec<String> = manifest()["tools"]

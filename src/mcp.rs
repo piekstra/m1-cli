@@ -96,9 +96,9 @@ impl LiveSource {
     }
 
     /// Run `f` with a context, one read at a time. A lapsed access token is
-    /// refreshed inside `Ctx::read`, and the refresh rotates the stored
-    /// refresh token: two calls refreshing at once would both present the
-    /// same one, and Auth0 can revoke the whole session on that reuse.
+    /// refreshed inside `Ctx::read`, under a lock that also holds off every
+    /// other `m1f` process, because the refresh rotates the stored refresh
+    /// token and Auth0 can revoke the whole session when one is reused.
     fn with_ctx<T>(&self, f: impl FnOnce(&Ctx) -> Result<T, CliError>) -> Result<T, CliError> {
         let _one = self.one_at_a_time.lock().unwrap_or_else(|e| e.into_inner());
         f(&Ctx {

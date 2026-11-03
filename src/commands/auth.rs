@@ -65,7 +65,7 @@ use pk_cli_core::{output, CliError};
 use pk_cli_secrets::{CredentialStore, Secret};
 use serde_json::{json, Value};
 
-use super::{emit, Ctx, TOKEN_ACCOUNT};
+use super::{emit, Ctx};
 use crate::client::{M1Client, PendingChallenge, TokenBundle};
 use crate::config::Config;
 use crate::{auth0, graphql};
@@ -139,6 +139,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
     }
 
     let username = resolve_username(ctx, args)?;
+    ctx.before_signin()?;
     let prompt = if args.base.non_interactive {
         None
     } else if args.code.is_some() {
@@ -207,7 +208,7 @@ pub fn login(ctx: &Ctx, store: &ConfigStore, args: &LoginCmdArgs) -> Result<(), 
                 .into(),
         )
     })?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     ctx.clear_pending()?;
     let status = status_dto(ctx, Some(&bundle), Some(&username));
     status.emit(ctx.common.json);
@@ -237,6 +238,8 @@ fn browser_session_login(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError>
             auth0::STDIN_LOGIN
         )));
     }
+    // Before the read: a session piped in once cannot be read again.
+    ctx.lock_usable()?;
     // The pasted session is input: read and check it before the keychain.
     let raw = args.base.source.read(None)?;
     let mut bundle = auth0::parse_captured(raw.expose())?;
@@ -263,7 +266,7 @@ fn store_session(ctx: &Ctx, args: &LoginCmdArgs, bundle: &TokenBundle) -> Result
     if !args.base.no_verify {
         verify(ctx, bundle)?;
     }
-    ctx.store_tokens(bundle)?;
+    ctx.store_login(bundle)?;
     ctx.clear_pending()?;
     if !ctx.common.quiet {
         let renewal = if bundle.refresh_token.is_some() {
@@ -343,6 +346,7 @@ fn browser_sign_in(ctx: &Ctx, args: &LoginCmdArgs) -> Result<(), CliError> {
     // The keychain check comes before the window: a sign-in the owner has
     // finished is not thrown away for want of --overwrite.
     refuse_overwrite(ctx, args)?;
+    ctx.before_signin()?;
     let launch = Launch::new(crate::BIN)
         .url(crate::client::WEB_ORIGIN)
         .fresh_profile(scratch)
@@ -602,7 +606,7 @@ pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), C
     let done = run_logout(
         ctx.creds,
         args.forget,
-        || ctx.creds.delete(TOKEN_ACCOUNT).map(|_| ()),
+        || ctx.forget_tokens(),
         || ctx.clear_pending(),
         || store.clear().map(|_| ()),
         || pk_cli_browser::forget_profile(crate::BIN),
@@ -640,7 +644,7 @@ fn run_logout(
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
     let mut steps = LogoutSteps::default();
-    steps.step("the stored session", session());
+    steps.session(session());
     if let Err(e) = pending() {
         steps.failed("a half-finished login", e);
     }
@@ -691,6 +695,19 @@ struct LogoutSteps {
 }
 
 impl LogoutSteps {
+    /// The session's removal. `Upstream` is the refresh lock's: the delete has run,
+    /// and what remains is a renewal in flight that can store the session again.
+    fn session(&mut self, result: Result<(), CliError>) {
+        let what = match &result {
+            Err(CliError::Upstream(_)) => {
+                self.finish_when = Some("In a minute, run");
+                "a renewal that can store the session again"
+            }
+            _ => "the stored session",
+        };
+        self.step(what, result);
+    }
+
     fn step(&mut self, what: &str, result: Result<(), CliError>) {
         match result {
             Ok(()) => self.cleared.push(what.to_string()),
@@ -752,8 +769,8 @@ impl LogoutSteps {
              finish."
         );
         // The exit code is the first failure's. `Keychain` and `Other` share theirs,
-        // and `Other` puts no "keychain error:" in front of the whole report. Every
-        // step here fails as one of those two.
+        // and `Other` puts no "keychain error:" in front of the whole report. A held
+        // refresh lock is `Upstream`: exit 5 comes only with that variant's prefix.
         Err(match first {
             CliError::Keychain(_) => CliError::Other(message),
             first => reworded(first, |_| message),
@@ -794,9 +811,10 @@ pub fn set_credential(ctx: &Ctx, args: &SetCredentialArgs) -> Result<(), CliErro
             "a session is already stored; pass --overwrite to replace it".into(),
         ));
     }
+    ctx.lock_usable()?;
     let secret = args.source.read(None)?;
     let bundle = parse_credential(secret.expose())?;
-    ctx.store_tokens(&bundle)?;
+    ctx.store_login(&bundle)?;
     if !ctx.common.quiet {
         eprintln!("session stored in the OS keychain");
     }
@@ -1665,6 +1683,47 @@ exec sleep 60
         ] {
             assert!(message.contains(needle), "missing {needle:?} in: {message}");
         }
+
+        // A refresh lock held past the wait: the prefix once, and not inside.
+        let err = run_logout(
+            &real_store(),
+            false,
+            || Err(CliError::Upstream("dummy: lock held".into())),
+            || Err(CliError::Keychain("dummy second".into())),
+            || panic!("--forget was not asked for"),
+            || Ok(true),
+        )
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err}");
+        let message = err.to_string();
+        assert_eq!(
+            message.matches("network/upstream error").count(),
+            1,
+            "{message}"
+        );
+        assert!(!message.contains("keychain error"), "{message}");
+
+        // On its own: the tokens are gone, so the report does not say they remain.
+        let err = run_logout(
+            &real_store(),
+            false,
+            || Err(CliError::Upstream("dummy: lock held".into())),
+            || Ok(()),
+            || panic!("--forget was not asked for"),
+            || Ok(true),
+        )
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("only a renewal that can store the session again remains"),
+            "{message}"
+        );
+        assert!(!message.contains("stored session remains"), "{message}");
+        assert!(
+            message.contains("In a minute, run `m1f auth logout`"),
+            "{message}"
+        );
 
         let err = run_logout(
             &real_store(),

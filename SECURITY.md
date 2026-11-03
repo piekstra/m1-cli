@@ -8,7 +8,9 @@ draft). Please do not file a public issue for anything credential-related.
 ## What this tool holds
 
 `m1f` talks to M1's own web/mobile backend with your own credentials. It has no
-server component and no telemetry. Everything it stores is local:
+telemetry, and no server component unless you run `m1f mcp --http` (see
+[The MCP server](#the-mcp-server)). Everything it stores is local, except the
+copy of the `--http` bearer token you give your own Cloudflare Worker:
 
 | Thing | Where it lives | Notes |
 | --- | --- | --- |
@@ -18,6 +20,8 @@ server component and no telemetry. Everything it stores is local:
 | Browser-session capture | **Not stored.** | `auth login --browser` reads auth0-spa-js's cache entry out of the sign-in window; `auth login --browser-session` reads it from stdin/env. Either way only the access token, refresh token, expiry and client id are kept; the id token and the profile claims in it are dropped. A token whose audience is not M1's API, or whose issuer is not `account.m1.com`, is refused before anything is sent anywhere — so a captured or pasted token cannot direct the refresh token to another host. |
 | Sign-in window profile | **Kept on disk**, `0700`, until `auth logout` removes it | See [The kept browser profile](#the-kept-browser-profile). `--fresh-profile` uses a scratch `0700` directory in the temp dir instead, created exclusively under an unpredictable name and deleted when the window closes, Ctrl-C included. Chrome's DevTools port (loopback only, a port Chrome picks) has no authentication: while the window is open, any local process that reaches it could read that window's session. The window is open only while you sign in; the dashboard tab is closed the moment the session is read, then Chrome is stopped. The session is read only from pages on exactly `dashboard.m1.com` (docs/api.md, "The browser capture"). |
 | MFA breadcrumb | OS keychain, service `piekstra.m1f` | Only a marker that a code was requested — it holds **no credential**, because M1 has no resumable session. Deleted on the next successful login. |
+| `--http` bearer token | OS keychain, service `piekstra.m1f`, item `mcp-http-token`, or `M1F_MCP_TOKEN`; **a copy in your Cloudflare Worker**, as its `HOME_M1_TOKEN` secret | Only if you use `m1f mcp --http`. It admits a caller to the read-only tools on 127.0.0.1; it signs in to nothing at M1. |
+| Refresh lock | `~/.config/m1f/token-refresh.lock` | An empty file. `m1f` processes hold it while renewing the session, so two never present one refresh token. That holds once every copy sharing the keychain item is 0.5.2 or later, including a server not yet restarted and an installed Claude Desktop extension, which bundles its own binary. No secrets. |
 | Non-secret settings | `~/.config/m1f/config.json` | Username, default account id. No secrets. |
 
 ## Invariants
@@ -78,6 +82,13 @@ carry the token (compared in constant time) and a `Host` of `127.0.0.1` or
 the read-only tools are served (all four are). The session stays in the
 keychain: the Worker sends tool calls and receives results, and never sees
 a cookie or a token for M1.
+
+**Tool results leave your computer on this path.** They hold your financial
+data (balances, positions, activity, realized gains, the list of your tax
+documents). They cross Cloudflare, through your tunnel and your Worker, and
+reach Claude, which shows them in your conversation. Who holds what, and what
+a leaked token can do, is in the connector's
+[threat model](https://github.com/piekstra/cli-common/blob/main/connector/README.md#threat-model).
 
 `M1F_KEYCHAIN_SERVICE` renames the keychain service read, for tests and
 for checking the error paths against an empty service. It carries no
@@ -143,6 +154,25 @@ that is exit 1, with only the profile remaining.
 That removes this machine's copies of the credentials; it does not invalidate
 the session server-side. To do that, change your M1 password and sign out other
 devices from M1's own web app or mobile app.
+
+The delete runs even when the refresh lock is unavailable. If another process has
+held the lock past the wait, `auth logout` deletes the tokens and exits 5 saying
+so, because a renewal in flight can store them again. Run it again in a minute to
+settle it.
+
+`auth logout` does not touch `mcp-http-token` and does not stop `m1f mcp --http`.
+The server stays up, its callers get auth errors, and **a later login silently
+restores the token holder's access**. Revoke that access separately:
+
+- **Invalidate the token:** `m1f mcp --new-token --overwrite`, then restart the
+  server (`launchctl kickstart -k gui/$(id -u)/com.piekstra.m1f-mcp-http`). The
+  old token works until the restart. A server that takes its token from
+  `M1F_MCP_TOKEN` needs the variable changed instead. To keep using the
+  connector, put the new value in the Worker's `HOME_M1_TOKEN`.
+- **Remove the path:** stop the launchd agent
+  (`launchctl bootout gui/$(id -u)/com.piekstra.m1f-mcp-http`) and the tunnel,
+  and delete the tunnel and VPC service
+  ([removing it](https://github.com/piekstra/cli-common/blob/main/connector/README.md#updating-rotating-and-removing)).
 
 ## Scope
 

@@ -2,9 +2,8 @@
 
 ## v0.6.0 — 2026-11-03
 
-Moves to cli-common v0.17.0 and Rust 1.89. A browser sign-in now runs in a
-profile `m1f` keeps, where it used to run in a scratch profile deleted after every
-sign-in.
+A browser sign-in now runs in a profile `m1f` keeps, where it used to run in a
+scratch profile deleted after every sign-in.
 
 - `m1f auth login --browser` keeps its Chrome profile on disk, owner-only
   (`0700`), at `~/Library/Application Support/piekstra.m1f/browser-profile` on

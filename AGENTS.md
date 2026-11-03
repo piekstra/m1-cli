@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.17.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.18.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -153,9 +153,16 @@ If a real write is ever added it needs §1.3's confirmation rules (prompt unless
 profile (DESIGN.md §1.9): `m1_portfolio`, `m1_activity`, `m1_documents`
 (listed, never downloaded) and `m1_realized_gains`. They read through the
 `Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the commands
-use, one read at a time, because a refresh rotates the stored refresh token
-and two refreshing at once would present the same one twice. The tools
-never sign in: an auth error asks the user to run `m1f auth login --browser`
+use, one read at a time. A refresh rotates the stored refresh token, and two
+refreshing at once would present the same one twice, so `Ctx::refresh` runs
+under `pk_cli_auth::refresh_lock::RefreshLock` (`~/.config/m1f/token-refresh.lock`,
+holding nothing) against every other `m1f` process, re-reads the session once
+it holds the lock, and posts no grant if the stored refresh token changed. A
+login and a logout hold it around their keychain write only, never across the
+sign-in: a login checks it first (`Ctx::before_signin`), stores through
+`Ctx::store_login`, and a logout's delete runs with or without it
+(`Ctx::forget_tokens`). The tools never sign in: an auth error asks the user to run
+`m1f auth login --browser`
 in a terminal (the profile's standard remedy names plain `auth login`, which
 M1 now refuses).
 
@@ -173,7 +180,8 @@ M1 now refuses).
   same tools on 127.0.0.1 behind a bearer token for the deploy-your-own
   connector's home module (`HOME_M1`); `tests/mcp_http.rs` drives it with
   the token in `M1F_MCP_TOKEN` and an empty `M1F_KEYCHAIN_SERVICE`, so it
-  reads no keychain.
+  reads no keychain. It outlives `self-update`, whose note (`pk_cli_mcp::restart_note`)
+  tells the owner to restart it; its start line names the version.
 
 ## Output contract
 
@@ -218,8 +226,9 @@ records the live shapes behind these commands.
 
 ## Exit codes
 
-0 ok · 1 unexpected · 2 usage · 3 auth · 4 not found · 5 upstream · 6
-confirmation required. **Validate arguments before touching the keychain or the
+0 ok · 1 unexpected · 2 usage · 3 auth · 4 not found · 5 upstream, or another
+`m1f` process holding the token-refresh lock past the wait · 6 confirmation
+required. **Validate arguments before touching the keychain or the
 network**, so `--help` and bad input never prompt, hang, or spend a request.
 
 ## Fixtures
