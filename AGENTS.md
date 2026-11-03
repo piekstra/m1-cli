@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.17.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.18.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -129,7 +129,9 @@ under `pk_cli_auth::refresh_lock::RefreshLock` (`~/.config/m1f/token-refresh.loc
 holding nothing) against every other `m1f` process, re-reads the session once
 it holds the lock, and posts no grant if the stored refresh token changed. A
 login and a logout hold it around their keychain write only, never across the
-sign-in. The tools never sign in: an auth error asks the user to run
+sign-in: a login checks it first (`Ctx::before_signin`), stores through
+`Ctx::store_login`, and a logout's delete runs with or without it
+(`Ctx::forget_tokens`). The tools never sign in: an auth error asks the user to run
 `m1f auth login --browser`
 in a terminal (the profile's standard remedy names plain `auth login`, which
 M1 now refuses).
@@ -194,8 +196,9 @@ records the live shapes behind these commands.
 
 ## Exit codes
 
-0 ok · 1 unexpected · 2 usage · 3 auth · 4 not found · 5 upstream · 6
-confirmation required. **Validate arguments before touching the keychain or the
+0 ok · 1 unexpected · 2 usage · 3 auth · 4 not found · 5 upstream, or another
+`m1f` process holding the token-refresh lock past the wait · 6 confirmation
+required. **Validate arguments before touching the keychain or the
 network**, so `--help` and bad input never prompt, hang, or spend a request.
 
 ## Fixtures

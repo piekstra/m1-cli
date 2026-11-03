@@ -165,7 +165,10 @@ an exclusive lock on `~/.config/m1f/token-refresh.lock` (an empty file;
 reads the session again once it holds the lock, and if the stored refresh token
 is no longer the one behind the access token M1 refused, another process has
 renewed: it posts no grant and retries with that process's tokens. A wait is
-bounded at 75 s, then exit 5 naming the lock, with nothing sent.
+bounded at 75 s, then exit 5 naming the lock, with nothing sent. The lock only
+excludes copies that take it, so the protection starts once every copy is 0.5.2 or
+later, including a server not yet restarted and an installed Claude Desktop
+extension, which bundles its own binary.
 
 #### The browser capture (`auth login --browser`)
 

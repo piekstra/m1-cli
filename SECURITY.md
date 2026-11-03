@@ -21,7 +21,7 @@ copy of the `--http` bearer token you give your own Cloudflare Worker:
 | Sign-in window profile | A fresh `0700` directory in the temp dir, **deleted** when the login ends | `auth login --browser` runs Chrome in a throwaway profile, created exclusively under an unpredictable name, so nothing of your everyday browser is read and nothing of the sign-in stays behind. Chrome's DevTools port (loopback only, a port Chrome picks) has no authentication: while the window is open, any local process that reaches it could read that window's session. The window is open only while you sign in; the dashboard tab is closed the moment the session is read, then Chrome is stopped and the profile removed, Ctrl-C included. The session is read only from pages on exactly `dashboard.m1.com` (docs/api.md, "The browser capture"). |
 | MFA breadcrumb | OS keychain, service `piekstra.m1f` | Only a marker that a code was requested — it holds **no credential**, because M1 has no resumable session. Deleted on the next successful login. |
 | `--http` bearer token | OS keychain, service `piekstra.m1f`, item `mcp-http-token`, or `M1F_MCP_TOKEN`; **a copy in your Cloudflare Worker**, as its `HOME_M1_TOKEN` secret | Only if you use `m1f mcp --http`. It admits a caller to the read-only tools on 127.0.0.1; it signs in to nothing at M1. |
-| Refresh lock | `~/.config/m1f/token-refresh.lock` | An empty file. `m1f` processes hold it while renewing the session, so two never present one refresh token. No secrets. |
+| Refresh lock | `~/.config/m1f/token-refresh.lock` | An empty file. `m1f` processes hold it while renewing the session, so two never present one refresh token. That holds once every copy sharing the keychain item is 0.5.2 or later, including a server not yet restarted and an installed Claude Desktop extension, which bundles its own binary. No secrets. |
 | Non-secret settings | `~/.config/m1f/config.json` | Username, default account id. No secrets. |
 
 ## Invariants
@@ -99,6 +99,11 @@ secret.
 That removes this machine's copy of the credentials; it does not invalidate the
 session server-side. To do that, change your M1 password and sign out other
 devices from M1's own web app or mobile app.
+
+The delete runs even when the refresh lock is unavailable. If another process has
+held the lock past the wait, `auth logout` deletes the tokens and exits 5 saying
+so, because a renewal in flight can store them again. Run it again in a minute to
+settle it.
 
 `auth logout` does not touch `mcp-http-token` and does not stop `m1f mcp --http`.
 The server stays up, its callers get auth errors, and **a later login silently

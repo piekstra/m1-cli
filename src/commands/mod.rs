@@ -97,16 +97,26 @@ impl Ctx<'_> {
         self.creds.set(TOKEN_ACCOUNT, &Secret::new(raw))
     }
 
+    /// Fail now if the lock a login's write needs is stuck or unusable, before
+    /// anyone signs in or a secret is read from stdin.
+    pub fn before_signin(&self) -> Result<(), CliError> {
+        RefreshLock::for_binary(crate::BIN)?.before_signin()
+    }
+
     /// Store a session a login obtained, under the lock a renewal holds, so a
     /// renewal in flight cannot overwrite it with the old session's tokens.
     pub fn store_login(&self, bundle: &TokenBundle) -> Result<(), CliError> {
-        RefreshLock::for_binary(crate::BIN)?.hold(|| self.store_tokens(bundle))
+        RefreshLock::for_binary(crate::BIN)?.store_signin(|| self.store_tokens(bundle))
     }
 
-    /// Delete the stored session, under the lock a renewal holds, so a renewal
-    /// in flight cannot store it again after the logout.
+    /// Delete the stored session, under the lock a renewal holds if it can be
+    /// had, so a renewal in flight cannot store it again after the logout. The
+    /// delete runs either way: the lock must not keep a credential on the machine.
+    ///
+    /// `store_login` and this are one call over the real keychain, which no test
+    /// may reach. `RefreshLock`'s own tests cover what these calls do.
     pub fn forget_tokens(&self) -> Result<(), CliError> {
-        RefreshLock::for_binary(crate::BIN)?.hold(|| self.creds.delete(TOKEN_ACCOUNT).map(|_| ()))
+        RefreshLock::forget_for_binary(crate::BIN, || self.creds.delete(TOKEN_ACCOUNT).map(|_| ()))
     }
 
     pub fn pending(&self) -> Result<Option<PendingChallenge>, CliError> {
@@ -166,19 +176,16 @@ impl Ctx<'_> {
     /// stores a password, and a fresh login can demand an MFA code that no
     /// unattended run could answer.
     fn refresh(&self, presented: Option<&TokenBundle>) -> Result<(), CliError> {
-        let refresh_token = presented.and_then(|b| b.refresh_token.as_deref());
-        let hint = presented.map_or(BROWSER_LOGIN, TokenBundle::login_hint);
-        if let Some(reason) = refresh_blocked(
+        let refresh_token = renewable(
             self.cfg.auto_login(),
             presented.is_some(),
-            refresh_token.is_some(),
-            hint,
-        ) {
-            return Err(CliError::Auth(reason));
-        }
+            presented.and_then(|b| b.refresh_token.as_deref()),
+            presented.map_or(BROWSER_LOGIN, TokenBundle::login_hint),
+        )
+        .map_err(CliError::Auth)?;
         renew_session(
             &RefreshLock::for_binary(crate::BIN)?,
-            refresh_token.expect("checked"),
+            refresh_token,
             || self.tokens(),
             |stored, refresh_token| {
                 if !self.common.quiet {
@@ -226,35 +233,32 @@ fn renew_session(
 /// The login that works today, named when nothing is stored.
 const BROWSER_LOGIN: &str = crate::auth0::LOGIN;
 
-/// Why an automatic token refresh can't proceed, if it can't.
+/// The refresh token an automatic renewal may present, or why it can't proceed.
 ///
 /// Split from the action so the policy is testable without a keychain, and so
 /// every refusal names the one command that fixes it (`hint`: the stored
 /// bundle's own login, [`TokenBundle::login_hint`]).
-fn refresh_blocked(
+fn renewable<'a>(
     auto_login: bool,
     has_bundle: bool,
-    has_refresh_token: bool,
+    refresh_token: Option<&'a str>,
     hint: &str,
-) -> Option<String> {
+) -> Result<&'a str, String> {
     // Never-logged-in is checked first and worded differently. The reauth rails
     // replace the original error with whatever this returns, so saying "access
     // token expired" here would tell a brand-new user their token expired —
     // pointing them at a problem they don't have.
     if !has_bundle {
-        return Some(format!("not logged in — run `{hint}`"));
+        return Err(format!("not logged in — run `{hint}`"));
     }
     if !auto_login {
-        return Some(format!(
+        return Err(format!(
             "access token expired — run `{hint}` (auto_login is off)"
         ));
     }
-    if !has_refresh_token {
-        return Some(format!(
-            "access token expired and no refresh token is stored — run `{hint}`"
-        ));
-    }
-    None
+    refresh_token.ok_or_else(|| {
+        format!("access token expired and no refresh token is stored — run `{hint}`")
+    })
 }
 
 /// Emit a DTO, taking the `--json` flag off the context.
@@ -551,19 +555,22 @@ mod tests {
 
     #[test]
     fn refresh_proceeds_when_a_refresh_token_is_stored() {
-        assert_eq!(refresh_blocked(true, true, true, LEGACY), None);
+        assert_eq!(
+            renewable(true, true, Some("dummy-refresh"), LEGACY),
+            Ok("dummy-refresh")
+        );
     }
 
     #[test]
     fn refresh_declines_when_auto_login_is_off() {
-        let why = refresh_blocked(false, true, true, LEGACY).expect("blocked");
+        let why = renewable(false, true, Some("dummy-refresh"), LEGACY).expect_err("blocked");
         assert!(why.contains("auto_login is off"), "{why}");
         assert!(why.contains("m1f auth login"), "{why}");
     }
 
     #[test]
     fn refresh_declines_without_a_refresh_token() {
-        let why = refresh_blocked(true, true, false, LEGACY).expect("blocked");
+        let why = renewable(true, true, None, LEGACY).expect_err("blocked");
         assert!(why.contains("no refresh token"), "{why}");
         assert!(why.contains("m1f auth login"), "{why}");
     }
@@ -576,7 +583,7 @@ mod tests {
             auth0: Some(crate::auth0::Auth0Grant::default()),
             ..TokenBundle::default()
         };
-        let why = refresh_blocked(true, true, false, stored.login_hint()).expect("blocked");
+        let why = renewable(true, true, None, stored.login_hint()).expect_err("blocked");
         assert!(
             why.contains("`m1f auth login --browser --overwrite`"),
             "{why}"
@@ -589,7 +596,7 @@ mod tests {
     #[test]
     fn never_logged_in_says_so_rather_than_claiming_expiry() {
         for auto in [true, false] {
-            let why = refresh_blocked(auto, false, false, BROWSER_LOGIN).expect("blocked");
+            let why = renewable(auto, false, None, BROWSER_LOGIN).expect_err("blocked");
             assert!(why.contains("not logged in"), "{why}");
             assert!(why.contains("`m1f auth login --browser`"), "{why}");
             assert!(!why.contains("expired"), "misleading message: {why}");
