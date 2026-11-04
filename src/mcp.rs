@@ -795,7 +795,8 @@ fn row_key(date: &str, acct: &AccountRef, row: &Value) -> Result<PositionKey, To
 /// not a row left to the count within its day.
 fn no_id(what: &str) -> ToolError {
     ToolError::upstream(format!(
-        "M1 sent a {what} with no id, so this list is not reported; its answer has changed"
+        "M1 sent a {what} with no id, so its place in this list cannot be held and the list is \
+         not reported"
     ))
 }
 
