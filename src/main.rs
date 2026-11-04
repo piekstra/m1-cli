@@ -177,7 +177,8 @@ enum AuthCmd {
     Status,
     /// Clear the session and remove the kept browser profile.
     ///
-    /// --forget also removes the stored identity. Every step is attempted even
+    /// --forget also removes the stored identity and the `mcp --http` connector token, though a
+    /// running server keeps the token it started with. Every step is attempted even
     /// after one fails; then this says what is cleared and what remains, and exits
     /// with the first failure's code. While Chrome is using the kept profile that
     /// is exit 1, with the rest already cleared and only the profile left.

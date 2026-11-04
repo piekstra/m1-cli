@@ -545,6 +545,7 @@ fn reworded(error: CliError, say: impl FnOnce(String) -> String) -> CliError {
         CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(say(m)),
         CliError::Keychain(m) => CliError::Keychain(say(m)),
         CliError::Other(m) => CliError::Other(say(m)),
+        detailed @ CliError::Detailed(_) => reworded(detailed.into_base(), say),
     }
 }
 
@@ -796,6 +797,7 @@ pub fn logout(ctx: &Ctx, store: &ConfigStore, args: &LogoutArgs) -> Result<(), C
         || ctx.forget_tokens(),
         || ctx.clear_pending(),
         || store.clear().map(|_| ()),
+        || CredentialStore::for_binary(crate::BIN).delete(pk_cli_mcp::HTTP_TOKEN_ACCOUNT),
         || pk_cli_browser::forget_profile(crate::BIN),
     )?;
     if !ctx.common.quiet {
@@ -828,6 +830,7 @@ fn run_logout(
     session: impl FnOnce() -> Result<(), CliError>,
     pending: impl FnOnce() -> Result<(), CliError>,
     identity: impl FnOnce() -> Result<(), CliError>,
+    connector_token: impl FnOnce() -> Result<bool, CliError>,
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
     let mut steps = LogoutSteps::default();
@@ -838,7 +841,13 @@ fn run_logout(
     let redirected = keychain_redirected(creds);
     if forgot && !redirected {
         steps.step("the config identity", identity());
+        // Nothing records whether `mcp --new-token` ran, so this delete is ungated.
+        match connector_token() {
+            Ok(removed) => steps.token_removed = removed,
+            Err(e) => steps.failed("the connector token", e),
+        }
     }
+    let token_removed = steps.token_removed;
     let removed = if redirected {
         steps.remains(
             "the browser profile and the config, left because M1F_KEYCHAIN_SERVICE is set",
@@ -861,11 +870,21 @@ fn run_logout(
         )
     } else {
         format!(
-            "logged out (stored tokens cleared{})",
+            "logged out (stored tokens cleared{}{}){}",
             if removed {
                 "; browser profile removed"
             } else {
                 ""
+            },
+            if token_removed {
+                "; connector token removed"
+            } else {
+                ""
+            },
+            if token_removed {
+                format!("\n{}", pk_cli_mcp::stop_note(crate::BIN))
+            } else {
+                String::new()
             }
         )
     })
@@ -879,6 +898,8 @@ struct LogoutSteps {
     reasons: Vec<String>,
     first: Option<CliError>,
     finish_when: Option<&'static str>,
+    /// A rerun finds no item, so the run that removed it owes the note, whatever else fails.
+    token_removed: bool,
 }
 
 impl LogoutSteps {
@@ -906,7 +927,7 @@ impl LogoutSteps {
     fn failed(&mut self, what: &str, error: CliError) {
         self.remains(what);
         self.reasons
-            .push(inner_message(&error).trim_end_matches('.').to_string());
+            .push(error.message().trim_end_matches('.').to_string());
         self.first.get_or_insert(error);
     }
 
@@ -938,10 +959,14 @@ impl LogoutSteps {
         let Some(first) = self.first else {
             return Ok(());
         };
-        let cleared = match self.cleared.len() {
+        let mut cleared = self.cleared;
+        if self.token_removed {
+            cleared.push("the connector token".to_string());
+        }
+        let cleared = match cleared.len() {
             0 => "nothing is cleared".to_string(),
-            1 => format!("{} is cleared", self.cleared[0]),
-            _ => format!("{} are cleared", listed(&self.cleared)),
+            1 => format!("{} is cleared", cleared[0]),
+            _ => format!("{} are cleared", listed(&cleared)),
         };
         let remains = match self.remains.len() {
             1 => format!("only {} remains", self.remains[0]),
@@ -952,10 +977,13 @@ impl LogoutSteps {
             _ => "Fix those, then run",
         };
         let reasons = self.reasons.join(". ");
-        let message = format!(
+        let mut message = format!(
             "partly logged out: {cleared} and {remains}. {reasons}. {when} `{finish}` again to \
              finish."
         );
+        if self.token_removed {
+            message = format!("{message}\n{}", pk_cli_mcp::stop_note(crate::BIN));
+        }
         // The exit code is the first failure's. `Keychain` and `Other` share theirs,
         // and `Other` puts no "keychain error:" in front of the whole report. A held
         // refresh lock is `Upstream`: exit 5 comes only with that variant's prefix.
@@ -963,19 +991,6 @@ impl LogoutSteps {
             CliError::Keychain(_) => CliError::Other(message),
             first => reworded(first, |_| message),
         })
-    }
-}
-
-/// A failure's own message, without the prefix its `Display` puts on.
-fn inner_message(error: &CliError) -> &str {
-    match error {
-        CliError::Usage(m)
-        | CliError::Auth(m)
-        | CliError::NotFound(m)
-        | CliError::Upstream(m)
-        | CliError::ConfirmationRequired(m)
-        | CliError::Keychain(m)
-        | CliError::Other(m) => m,
     }
 }
 
@@ -2280,6 +2295,70 @@ mod tests {
         assert!(memory.unverified.lock().unwrap().is_none());
     }
 
+    #[test]
+    fn a_forget_removes_the_connector_token_and_says_what_that_does_not_end() {
+        let line = run_logout(
+            &real_store(),
+            true,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(true),
+            || Ok(false),
+        )
+        .unwrap();
+        assert!(line.contains("connector token removed"), "{line}");
+        assert!(line.contains("keeps accepting the token"), "{line}");
+    }
+
+    /// The retry finds no item, so the partial failure is the only run that can say this.
+    #[test]
+    fn a_partial_forget_still_says_the_token_went_and_what_that_does_not_end() {
+        let e = run_logout(
+            &real_store(),
+            true,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(true),
+            || Err(BrowserError::ProfileInUse("dummy".into())),
+        )
+        .unwrap_err();
+        let says = e.to_string();
+        assert!(says.contains("the connector token"), "{says}");
+        assert!(says.contains("keeps accepting the token"), "{says}");
+    }
+
+    #[test]
+    fn a_forget_that_could_not_remove_the_connector_token_says_so() {
+        let e = run_logout(
+            &real_store(),
+            true,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Err(CliError::Keychain("dummy: denied".into())),
+            || Ok(false),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("the connector token"), "{e}");
+    }
+
+    #[test]
+    fn a_plain_logout_leaves_the_connector_token() {
+        let line = run_logout(
+            &real_store(),
+            false,
+            || Ok(()),
+            || Ok(()),
+            || panic!("a plain logout keeps the config"),
+            || panic!("a plain logout keeps the connector token"),
+            || Ok(false),
+        )
+        .unwrap();
+        assert!(!line.contains("connector token"), "{line}");
+    }
+
     /// `M1F_KEYCHAIN_SERVICE` moves the keychain, not the profile: a logout under
     /// it must never reach the real one, and says it left it.
     #[test]
@@ -2294,6 +2373,7 @@ mod tests {
             || Ok(()),
             || Ok(()),
             || panic!("a logout under a redirected keychain must not touch the config"),
+            || panic!("a logout under a redirected keychain must not touch the connector token"),
             || panic!("a logout under a redirected keychain must not touch the profile"),
         )
         .unwrap();
@@ -2307,7 +2387,16 @@ mod tests {
 
         // Naming the real service is the real logout.
         let same = CredentialStore::new(real_store().service().to_string());
-        let line = run_logout(&same, false, || Ok(()), || Ok(()), || Ok(()), || Ok(true)).unwrap();
+        let line = run_logout(
+            &same,
+            false,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(false),
+            || Ok(true),
+        )
+        .unwrap();
         assert!(line.contains("browser profile removed"), "{line}");
 
         // A failure under it still never reaches the profile, and says it stayed.
@@ -2317,6 +2406,7 @@ mod tests {
             || Err(CliError::Keychain("dummy: could not delete".into())),
             || Ok(()),
             || Ok(()),
+            || Ok(false),
             || panic!("a logout under a redirected keychain must not touch the profile"),
         )
         .unwrap_err();
@@ -2335,6 +2425,7 @@ mod tests {
             || Ok(()),
             || Ok(()),
             || Ok(()),
+            || Ok(false),
             forget,
         )
     }
@@ -2395,6 +2486,7 @@ mod tests {
                 || track("session", session),
                 || track("pending", pending),
                 || track("identity", identity),
+                || Ok(false),
                 || {
                     ran.borrow_mut().push("profile");
                     Ok(true)
@@ -2429,6 +2521,7 @@ mod tests {
             || Err(CliError::Auth("dummy first".into())),
             || Ok(()),
             || panic!("--forget was not asked for"),
+            || Ok(false),
             || Err(BrowserError::ProfileInUse("dummy second".into())),
         )
         .unwrap_err();
@@ -2452,6 +2545,7 @@ mod tests {
             || Err(CliError::Upstream("dummy: lock held".into())),
             || Err(CliError::Keychain("dummy second".into())),
             || panic!("--forget was not asked for"),
+            || Ok(false),
             || Ok(true),
         )
         .unwrap_err();
@@ -2471,6 +2565,7 @@ mod tests {
             || Err(CliError::Upstream("dummy: lock held".into())),
             || Ok(()),
             || panic!("--forget was not asked for"),
+            || Ok(false),
             || Ok(false),
         )
         .unwrap_err();
@@ -2495,6 +2590,7 @@ mod tests {
             || Ok(()),
             || Ok(()),
             || panic!("--forget was not asked for"),
+            || Ok(false),
             || Err(BrowserError::Profile("dummy".into())),
         )
         .unwrap_err();

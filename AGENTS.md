@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` is a thin pointer here.
 member of the piekstra CLI family and conforms to `piekstra-cli/1` — the spec
 lives in [`cli-common`](https://github.com/piekstra/cli-common)
 (`DESIGN.md`, `conformance.md`, `PROFILES.md`), pinned here at tag
-**v0.20.0**. Every `pk-cli-*` dependency sits on the same tag.
+**v0.27.0**. Every `pk-cli-*` dependency sits on the same tag.
 Read the spec before changing the command surface; do not reconstruct it from a
 sibling repo, which drifts.
 
@@ -169,7 +169,7 @@ If a real write is ever added it needs §1.3's confirmation rules (prompt unless
 profile (DESIGN.md §1.9): `m1_portfolio`, `m1_activity`, `m1_documents`
 (listed, never downloaded) and `m1_realized_gains`. They read through the
 `Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the commands
-use, one read at a time. A refresh rotates the stored refresh token, and two
+use, one call at a time. A refresh rotates the stored refresh token, and two
 refreshing at once would present the same one twice, so `Ctx::refresh` runs
 under `pk_cli_auth::refresh_lock::RefreshLock` (`~/.config/m1f/token-refresh.lock`,
 holding nothing) against every other `m1f` process, re-reads the session once

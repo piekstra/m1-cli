@@ -3,6 +3,7 @@
 //! mappers, and cli-common's conformance helper checks the definitions and
 //! every result's shape and size.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use pk_cli_core::CliError;
@@ -35,6 +36,10 @@ struct Fixtures {
     calls: Mutex<Vec<String>>,
     /// When set, every call fails with this.
     fail: Mutex<Option<CliError>>,
+    /// Tool calls that took a turn.
+    turns: AtomicUsize,
+    /// The real lock, so a call that takes two turns fails as it would live.
+    queue: Mutex<()>,
 }
 
 impl Fixtures {
@@ -72,6 +77,8 @@ impl Fixtures {
             capped: false,
             calls: Mutex::new(Vec::new()),
             fail: Mutex::new(None),
+            turns: AtomicUsize::new(0),
+            queue: Mutex::new(()),
         }
     }
 
@@ -91,6 +98,11 @@ impl Fixtures {
 }
 
 impl Source for Fixtures {
+    fn turn(&self) -> Result<Option<MutexGuard<'_, ()>>, CliError> {
+        self.turns.fetch_add(1, Ordering::Relaxed);
+        turn_within(&self.queue, Duration::from_millis(20)).map(Some)
+    }
+
     async fn accounts(&self) -> Result<Vec<Value>, CliError> {
         self.record("accounts".into())?;
         Ok(self.accounts.clone())
@@ -347,6 +359,217 @@ fn activity_is_newest_first_with_names_and_signed_amounts() {
         .source()
         .calls()
         .contains(&"activity:acct-000000003:2026-07-01".to_string()));
+}
+
+/// Every read of a call queues on one turn, so the wait is spent once however many accounts it
+/// reads. The fixture's turn is the real lock, so a second one in a call fails the call.
+#[test]
+fn every_tool_takes_one_turn() {
+    for (tool, args) in [
+        (PORTFOLIO_TOOL, json!({})),
+        (
+            ACTIVITY_TOOL,
+            json!({"since": "2026-07-01", "until": "2026-08-31"}),
+        ),
+        (DOCUMENTS_TOOL, json!({})),
+        (
+            GAINS_TOOL,
+            json!({"since": "2026-01-01", "until": "2026-12-31"}),
+        ),
+    ] {
+        let t = tools();
+        let r = call(&t, tool, args);
+        let _ = assert_fits(&t, tool, &r);
+        assert_eq!(t.source().turns.load(Ordering::Relaxed), 1, "{tool}");
+    }
+    let t = tools();
+    let _ = call(
+        &t,
+        ACTIVITY_TOOL,
+        json!({"since": "2026-07-01", "until": "2026-08-31"}),
+    );
+    let reads = t
+        .source()
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("activity:"))
+        .count();
+    assert!(reads > 1, "{reads}");
+}
+
+/// A call behind one that holds the turn says so, and does not sit until the call's limit.
+#[test]
+fn a_held_turn_is_an_answer_and_not_a_wait() {
+    let lock = Mutex::new(());
+    let held = lock.lock().unwrap();
+    let e = turn_within(&lock, Duration::from_millis(20)).unwrap_err();
+    assert_eq!(e.exit_code(), 5, "{e}");
+    assert!(e.to_string().contains("another call to M1"), "{e}");
+    drop(held);
+    assert!(turn_within(&lock, Duration::from_millis(20)).is_ok());
+}
+
+/// A page boundary falls inside a day, and a row posts before the next page. A cursor holds no
+/// state at M1, so a second set of fixtures stands for the later read.
+#[test]
+fn an_activity_row_that_posts_between_pages_repeats_nothing_and_skips_nothing() {
+    let template = Fixtures::new().activity[0].clone();
+    let row = |id: &str, date: &str| {
+        let mut row = template.clone();
+        row["id"] = json!(id);
+        row["date"] = json!(date);
+        row
+    };
+    let with_rows = |rows: Vec<Value>| {
+        let mut fixtures = Fixtures::new();
+        fixtures.activity = rows;
+        M1Tools::new(fixtures)
+    };
+    let before = vec![
+        row("d", "2026-03-04"),
+        row("c", "2026-03-03"),
+        row("b", "2026-03-03"),
+        row("a", "2026-03-01"),
+    ];
+    let mut after = vec![row("e", "2026-03-05")];
+    after.extend(before.clone());
+    let args = json!({"since": "2026-01-01", "until": "2026-12-31", "limit": 2,
+                      "response_format": "detailed"});
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let tools = with_rows(before);
+    let answer = call(&tools, ACTIVITY_TOOL, args.clone());
+    let first = assert_fits(&tools, ACTIVITY_TOOL, &answer);
+    let mut seen = ids(first);
+    assert_eq!(seen[0], "d");
+    let later = with_rows(after);
+    let mut cursor = first["next_cursor"].clone();
+    while cursor.is_string() {
+        let mut next = args.clone();
+        next["cursor"] = cursor;
+        let answer = call(&later, ACTIVITY_TOOL, next);
+        let page = assert_fits(&later, ACTIVITY_TOOL, &answer);
+        seen.extend(ids(page));
+        cursor = page["next_cursor"].clone();
+    }
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c", "d"], "{seen:?}");
+}
+
+/// What the activity test does, for a tool with its own key.
+fn pages_across_an_arrival(
+    tool: &str,
+    field: &str,
+    args: Value,
+    before: Fixtures,
+    after: Fixtures,
+) -> Vec<String> {
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i[field].as_str().unwrap().to_string())
+            .collect()
+    };
+    let tools = M1Tools::new(before);
+    let answer = call(&tools, tool, args.clone());
+    let first = assert_fits(&tools, tool, &answer);
+    let mut seen = ids(first);
+    let later = M1Tools::new(after);
+    let mut cursor = first["next_cursor"].clone();
+    while cursor.is_string() {
+        let mut next = args.clone();
+        next["cursor"] = cursor;
+        let answer = call(&later, tool, next);
+        let page = assert_fits(&later, tool, &answer);
+        seen.extend(ids(page));
+        cursor = page["next_cursor"].clone();
+    }
+    seen.sort();
+    seen
+}
+
+#[test]
+fn a_document_filed_between_pages_repeats_nothing_and_skips_nothing() {
+    let template = Fixtures::new().documents[0].clone();
+    let category = template.category.clone().unwrap_or_default();
+    let doc = |id: &str, date: &str| {
+        let mut doc = template.clone();
+        doc.id = id.to_string();
+        doc.date = Some(date.to_string());
+        doc.category = Some(category.clone());
+        doc
+    };
+    let with_docs = |docs: Vec<Document>| {
+        let mut fixtures = Fixtures::new();
+        fixtures.documents = docs;
+        fixtures
+    };
+    let before = vec![
+        doc("d", "2026-03-04"),
+        doc("c", "2026-03-03"),
+        doc("b", "2026-03-03"),
+        doc("a", "2026-03-01"),
+    ];
+    let mut after = vec![doc("e", "2026-03-05")];
+    after.extend(before.clone());
+    let seen = pages_across_an_arrival(
+        DOCUMENTS_TOOL,
+        "id",
+        json!({"since": "2026-01-01", "until": "2026-12-31", "limit": 2,
+               "response_format": "detailed"}),
+        with_docs(before),
+        with_docs(after),
+    );
+    assert_eq!(seen, ["a", "b", "c", "d"]);
+}
+
+#[test]
+fn a_lot_sold_between_pages_repeats_nothing_and_skips_nothing() {
+    let template = Fixtures::new()
+        .lots
+        .iter()
+        .find(|l| l["closed"].is_string())
+        .expect("a closed lot in the fixture")
+        .clone();
+    let lot = |id: &str, sold: &str| {
+        let mut lot = template.clone();
+        lot["id"] = json!(id);
+        lot["cusip"] = json!(id);
+        lot["closed"] = json!(sold);
+        lot
+    };
+    let with_lots = |lots: Vec<Value>| {
+        let mut fixtures = Fixtures::new();
+        fixtures.lots = lots;
+        fixtures
+    };
+    let before = vec![
+        lot("d", "2026-03-04"),
+        lot("c", "2026-03-03"),
+        lot("b", "2026-03-03"),
+        lot("a", "2026-03-01"),
+    ];
+    let mut after = vec![lot("e", "2026-03-05")];
+    after.extend(before.clone());
+    let seen = pages_across_an_arrival(
+        GAINS_TOOL,
+        "cusip",
+        json!({"since": "2026-01-01", "until": "2026-12-31", "limit": 2,
+               "response_format": "detailed"}),
+        with_lots(before),
+        with_lots(after),
+    );
+    assert_eq!(seen, ["a", "b", "c", "d"]);
 }
 
 #[test]

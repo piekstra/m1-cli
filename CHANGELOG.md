@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.1 — 2026-11-03
+
+Moves to cli-common v0.27.0.
+
+- `auth logout --forget` removes the connector token `mcp-http-token`, and says what that does not
+  end, even when another step fails: a running `m1f mcp --http` keeps the token it started with.
+- `m1_activity`, `m1_documents` and `m1_realized_gains` page by position, so a row that arrives
+  between pages repeats nothing and skips nothing. Rows of the same day now run in a fixed order of
+  their own. A cursor from an earlier version still works, as the count of rows it holds.
+- A tool call waits 45 seconds for the one before it, then says so, where it used to wait without
+  limit behind a keychain prompt. It holds its turn for the whole call, however many accounts it
+  reads.
+- A password and a refresh token stay on the host they were for. reqwest re-sends a body on a 307
+  or 308, so the token request and the login and renewal mutations refuse a redirect to another
+  host.
+- On Windows, a session too long for one credential is split and read back as one.
+
 ## v0.6.0 — 2026-11-03
 
 A browser sign-in now runs in a profile `m1f` keeps, where it used to run in a

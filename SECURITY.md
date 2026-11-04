@@ -24,6 +24,8 @@ copy of the `--http` bearer token you give your own Cloudflare Worker:
 | Refresh lock | `~/.config/m1f/token-refresh.lock` | An empty file. `m1f` processes hold it while renewing the session, so two never present one refresh token. That holds once every copy sharing the keychain item is 0.5.2 or later, including a server not yet restarted and an installed Claude Desktop extension, which bundles its own binary. No secrets. |
 | Non-secret settings | `~/.config/m1f/config.json` | Username, default account id. No secrets. |
 
+On Windows, whose Credential Manager holds 2,560 bytes per credential, a longer value is stored across several credentials with the suffix `.pk-split-` and read back whole. After a downgrade, run `m1f auth logout --forget` again from a current build: an older build's logout leaves the parts.
+
 ## Invariants
 
 These are enforced by code and tests, not just convention:
@@ -149,7 +151,8 @@ status` says whether a profile is kept, not whether anything is signed in there.
 
 `m1f auth logout` clears the stored tokens and removes the kept browser profile,
 and only that directory, as its last step; `--forget` also clears the config
-identity. There is no way to remove the profile alone. Every step is attempted even
+identity and the `mcp --http` connector token (`mcp-http-token`), though a running
+server keeps the token it started with. There is no way to remove the profile alone. Every step is attempted even
 after one fails, and a config that cannot be parsed stops none of them, so a keychain
 or config failure does not leave the profile behind.
 If one fails, the error says what is cleared and what remains, and how to finish,
@@ -172,8 +175,10 @@ so, because a renewal in flight can store them again. Run it again in a minute t
 settle it.
 
 `auth logout` does not touch `mcp-http-token` and does not stop `m1f mcp --http`.
-The server stays up, its callers get auth errors, and **a later login silently
-restores the token holder's access**. Revoke that access separately:
+`auth logout --forget` removes the token from the keychain too, and says so, but a
+running server keeps the token it started with. Either way the server stays up, its
+callers get auth errors, and **a later login silently restores the token holder's
+access**. Revoke that access separately:
 
 - **Invalidate the token:** `m1f mcp --new-token --overwrite`, then restart the
   server (`launchctl kickstart -k gui/$(id -u)/com.piekstra.m1f-mcp-http`). The
