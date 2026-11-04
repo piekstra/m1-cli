@@ -677,6 +677,7 @@ impl<S: Source> M1Tools<S> {
             },
         )?;
         let detailed = args.list.format().is_detailed();
+        let _turn = self.source.turn().map_err(tool_err)?;
         let docs = self
             .source
             .documents(&types, since.as_deref(), until.as_deref())
@@ -718,7 +719,6 @@ impl<S: Source> M1Tools<S> {
         )?;
         let detailed = args.list.format().is_detailed();
 
-        let _turn = self.source.turn().map_err(tool_err)?;
         let _turn = self.source.turn().map_err(tool_err)?;
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;

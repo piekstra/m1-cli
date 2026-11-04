@@ -38,6 +38,8 @@ struct Fixtures {
     fail: Mutex<Option<CliError>>,
     /// Tool calls that took a turn.
     turns: AtomicUsize,
+    /// The real lock, so a call that takes two turns fails as it would live.
+    queue: Mutex<()>,
 }
 
 impl Fixtures {
@@ -76,6 +78,7 @@ impl Fixtures {
             calls: Mutex::new(Vec::new()),
             fail: Mutex::new(None),
             turns: AtomicUsize::new(0),
+            queue: Mutex::new(()),
         }
     }
 
@@ -97,7 +100,7 @@ impl Fixtures {
 impl Source for Fixtures {
     fn turn(&self) -> Result<Option<MutexGuard<'_, ()>>, CliError> {
         self.turns.fetch_add(1, Ordering::Relaxed);
-        Ok(None)
+        turn_within(&self.queue, Duration::from_millis(20)).map(Some)
     }
 
     async fn accounts(&self) -> Result<Vec<Value>, CliError> {
@@ -358,9 +361,27 @@ fn activity_is_newest_first_with_names_and_signed_amounts() {
         .contains(&"activity:acct-000000003:2026-07-01".to_string()));
 }
 
-/// Every read of a call queues on one turn, so the wait is spent once however many accounts it reads.
+/// Every read of a call queues on one turn, so the wait is spent once however many accounts it
+/// reads. The fixture's turn is the real lock, so a second one in a call fails the call.
 #[test]
-fn a_call_over_every_account_takes_one_turn() {
+fn every_tool_takes_one_turn() {
+    for (tool, args) in [
+        (PORTFOLIO_TOOL, json!({})),
+        (
+            ACTIVITY_TOOL,
+            json!({"since": "2026-07-01", "until": "2026-08-31"}),
+        ),
+        (DOCUMENTS_TOOL, json!({})),
+        (
+            GAINS_TOOL,
+            json!({"since": "2026-01-01", "until": "2026-12-31"}),
+        ),
+    ] {
+        let t = tools();
+        let r = call(&t, tool, args);
+        let _ = assert_fits(&t, tool, &r);
+        assert_eq!(t.source().turns.load(Ordering::Relaxed), 1, "{tool}");
+    }
     let t = tools();
     let _ = call(
         &t,
@@ -374,7 +395,6 @@ fn a_call_over_every_account_takes_one_turn() {
         .filter(|c| c.starts_with("activity:"))
         .count();
     assert!(reads > 1, "{reads}");
-    assert_eq!(t.source().turns.load(Ordering::Relaxed), 1);
 }
 
 /// A call behind one that holds the turn says so, and does not sit until the call's limit.

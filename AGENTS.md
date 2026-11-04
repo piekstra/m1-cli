@@ -169,7 +169,7 @@ If a real write is ever added it needs §1.3's confirmation rules (prompt unless
 profile (DESIGN.md §1.9): `m1_portfolio`, `m1_activity`, `m1_documents`
 (listed, never downloaded) and `m1_realized_gains`. They read through the
 `Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the commands
-use, one read at a time. A refresh rotates the stored refresh token, and two
+use, one call at a time. A refresh rotates the stored refresh token, and two
 refreshing at once would present the same one twice, so `Ctx::refresh` runs
 under `pk_cli_auth::refresh_lock::RefreshLock` (`~/.config/m1f/token-refresh.lock`,
 holding nothing) against every other `m1f` process, re-reads the session once
