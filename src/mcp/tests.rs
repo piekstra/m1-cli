@@ -749,6 +749,22 @@ fn a_row_with_no_id_is_an_upstream_error() {
     assert!(r.text().contains("no id"), "{}", r.text());
 }
 
+/// The same for a lot sold, which holds its place the same way.
+#[test]
+fn a_gain_with_no_id_is_an_upstream_error() {
+    let mut fixtures = Fixtures::new();
+    fixtures.lots[0].as_object_mut().unwrap().remove("id");
+    let t = M1Tools::new(fixtures);
+    let r = call(
+        &t,
+        GAINS_TOOL,
+        json!({"since": "2026-01-01", "until": "2026-12-31"}),
+    );
+    assert!(r.is_error(), "{}", r.text());
+    assert!(r.text().starts_with("upstream:"), "{}", r.text());
+    assert!(r.text().contains("no id"), "{}", r.text());
+}
+
 // ---- m1_realized_gains ------------------------------------------------------
 
 #[test]
