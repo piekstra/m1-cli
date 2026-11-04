@@ -942,7 +942,7 @@ fn the_trading_tool_sends_no_id_and_no_party_name() {
         assert!(!r.text().contains(needle), "{needle} in {}", r.text());
     }
     for account in out["accounts"].as_array().unwrap() {
-        assert!(account.get("id").is_none(), "{account}");
+        assert!(account.get("id").is_none());
     }
     let sent = &out["accounts"][1]["pending_transfers"]["items"][0];
     assert!(sent.get("id").is_none(), "{sent}");
