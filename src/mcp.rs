@@ -19,11 +19,13 @@
 //! command.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use pk_cli_core::{dates, CliError, CommonArgs, Money, RangeArgs};
 use pk_cli_documents::Document;
 use pk_cli_mcp::{
-    parse_args, ListArgs, Page, PageRequest, Server, ToolDef, ToolError, ToolOutput, Toolset,
+    hold_within, parse_args, ListArgs, Order, Page, PageRequest, PositionKey, PositionRequest,
+    Server, ToolDef, ToolError, ToolOutput, Toolset,
 };
 use pk_cli_secrets::CredentialStore;
 use schemars::JsonSchema;
@@ -39,6 +41,10 @@ pub const PORTFOLIO_TOOL: &str = "m1_portfolio";
 pub const ACTIVITY_TOOL: &str = "m1_activity";
 pub const DOCUMENTS_TOOL: &str = "m1_documents";
 pub const GAINS_TOOL: &str = "m1_realized_gains";
+
+/// How long a call waits for the one before it. Parallel calls from one model turn are normal and
+/// short; past this, the model is better told than left to retry into a queue.
+const QUEUE_WAIT: Duration = Duration::from_secs(45);
 
 /// What a sign-in failure asks of the user. M1's password login is closed
 /// (an HTTP 403 since 2026-10-27), so the standard `m1f auth login` remedy
@@ -108,7 +114,13 @@ impl LiveSource {
     /// other `m1f` process, because the refresh rotates the stored refresh
     /// token and Auth0 can revoke the whole session when one is reused.
     fn with_ctx<T>(&self, f: impl FnOnce(&Ctx) -> Result<T, CliError>) -> Result<T, CliError> {
-        let _one = self.one_at_a_time.lock().unwrap_or_else(|e| e.into_inner());
+        let _one = hold_within(&self.one_at_a_time, QUEUE_WAIT).ok_or_else(|| {
+            CliError::Upstream(
+                "another call to M1 is still running in this server, and may be waiting on a \
+                 keychain prompt on this computer; ask the user to check for one, then try again"
+                    .into(),
+            )
+        })?;
         f(&Ctx {
             common: &self.common,
             cfg: &self.cfg,
@@ -571,7 +583,7 @@ impl<S: Source> M1Tools<S> {
         let account = non_empty(args.account.as_deref());
         let kind = non_empty(args.kind.as_deref());
         let symbol = non_empty(args.symbol.as_deref());
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &ActivityFilter {
                 since: &since,
@@ -586,7 +598,7 @@ impl<S: Source> M1Tools<S> {
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;
         let mut complete = true;
-        let mut matched: Vec<(String, ActivityItem)> = Vec::new();
+        let mut matched: Vec<(PositionKey, ActivityItem)> = Vec::new();
         for acct in pick(&all, account)? {
             let (rows, capped) = self
                 .source
@@ -614,18 +626,17 @@ impl<S: Source> M1Tools<S> {
                     share_price: amount(&row, "share_price").filter(|_| detailed),
                     id: text(&row, "id").filter(|_| detailed),
                 };
-                matched.push((date.unwrap_or_default(), item));
+                let key = row_key(date.as_deref().unwrap_or_default(), acct, &row);
+                matched.push((key, item));
             }
         }
-        // Newest first across accounts; a stable sort keeps M1's order
-        // within a day.
-        matched.sort_by(|a, b| b.0.cmp(&a.0));
         ToolOutput::new(&ActivityOut {
             since,
             until,
             complete,
             page: page.page(
-                matched.into_iter().map(|(_, i)| i).collect(),
+                matched,
+                Order::Descending,
                 "since/until, account, type or symbol",
             )?,
         })
@@ -643,7 +654,7 @@ impl<S: Source> M1Tools<S> {
                 )));
             }
         }
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &DocumentsFilter {
                 types: &types,
@@ -659,15 +670,19 @@ impl<S: Source> M1Tools<S> {
             .map_err(tool_err)?;
         let matched = docs
             .into_iter()
-            .map(|d| DocumentItem {
-                date: d.date,
-                name: d.name,
-                kind: d.category.map(|c| c.to_ascii_lowercase().replace('_', "-")),
-                id: Some(d.id).filter(|id| detailed && !id.is_empty()),
+            .map(|d| {
+                let key = PositionKey::new(d.date.as_deref().unwrap_or_default(), &d.id);
+                let item = DocumentItem {
+                    date: d.date,
+                    name: d.name,
+                    kind: d.category.map(|c| c.to_ascii_lowercase().replace('_', "-")),
+                    id: Some(d.id).filter(|id| detailed && !id.is_empty()),
+                };
+                (key, item)
             })
             .collect();
         ToolOutput::new(&DocumentsOut {
-            page: page.page(matched, "type or since/until")?,
+            page: page.page(matched, Order::Descending, "type or since/until")?,
         })
     }
 
@@ -678,7 +693,7 @@ impl<S: Source> M1Tools<S> {
         )?;
         let account = non_empty(args.account.as_deref());
         let symbol = non_empty(args.symbol.as_deref());
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &GainsFilter {
                 since: &since,
@@ -704,7 +719,7 @@ impl<S: Source> M1Tools<S> {
         };
         let mut complete = true;
         let mut sums = Sums::default();
-        let mut matched: Vec<(String, LotItem)> = Vec::new();
+        let mut matched: Vec<(PositionKey, LotItem)> = Vec::new();
         for acct in scope {
             let (rows, capped) = self.source.closed_lots(&acct.id).await.map_err(tool_err)?;
             complete &= !capped;
@@ -737,22 +752,23 @@ impl<S: Source> M1Tools<S> {
                     cusip: text(&row, "cusip").filter(|_| detailed),
                     id: text(&row, "id").filter(|_| detailed),
                 };
-                matched.push((sold, item));
+                matched.push((row_key(&sold, acct, &row), item));
             }
         }
-        // Newest sale first, as the other lists.
-        matched.sort_by(|a, b| b.0.cmp(&a.0));
         ToolOutput::new(&GainsOut {
             since,
             until,
             totals: sums.totals(),
             complete,
-            page: page.page(
-                matched.into_iter().map(|(_, i)| i).collect(),
-                "since/until, account or symbol",
-            )?,
+            page: page.page(matched, Order::Descending, "since/until, account or symbol")?,
         })
     }
+}
+
+/// Where a row belongs in a newest-first list across accounts: its date, then its account and id.
+fn row_key(date: &str, acct: &AccountRef, row: &Value) -> PositionKey {
+    let id = text(row, "id").unwrap_or_default();
+    PositionKey::new(date, &format!("{}:{id}", acct.id))
 }
 
 /// Exact sums in cents: a float would drift on a year of lots.

@@ -420,7 +420,12 @@ pub fn refresh(
     if verbose {
         eprintln!("POST {url} (refresh_token grant)");
     }
-    let http = pk_cli_http::client("m1f", env!("CARGO_PKG_VERSION"))?;
+    // The body holds a refresh token, and reqwest re-sends a body on a 307 or 308, so this
+    // client follows no redirect to another host.
+    let http = pk_cli_http::builder("m1f", env!("CARGO_PKG_VERSION"))
+        .redirect(pk_cli_core::transport::same_host_redirects())
+        .build()
+        .map_err(|e| CliError::Other(format!("failed to build HTTP client: {e}")))?;
     let resp = http
         .post(&url)
         .header("accept", "application/json")

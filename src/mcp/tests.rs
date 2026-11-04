@@ -349,6 +349,61 @@ fn activity_is_newest_first_with_names_and_signed_amounts() {
         .contains(&"activity:acct-000000003:2026-07-01".to_string()));
 }
 
+/// A page boundary falls inside a day, and a row posts before the next page. A cursor holds no
+/// state at M1, so a second set of fixtures stands for the later read.
+#[test]
+fn an_activity_row_that_posts_between_pages_repeats_nothing_and_skips_nothing() {
+    let template = Fixtures::new().activity[0].clone();
+    let row = |id: &str, date: &str| {
+        let mut row = template.clone();
+        row["id"] = json!(id);
+        row["date"] = json!(date);
+        row
+    };
+    let with_rows = |rows: Vec<Value>| {
+        let mut fixtures = Fixtures::new();
+        fixtures.activity = rows;
+        M1Tools::new(fixtures)
+    };
+    let before = vec![
+        row("d", "2026-03-04"),
+        row("c", "2026-03-03"),
+        row("b", "2026-03-03"),
+        row("a", "2026-03-01"),
+    ];
+    let mut after = vec![row("e", "2026-03-05")];
+    after.extend(before.clone());
+    let args = json!({"since": "2026-01-01", "until": "2026-12-31", "limit": 2,
+                      "response_format": "detailed"});
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let tools = with_rows(before);
+    let answer = call(&tools, ACTIVITY_TOOL, args.clone());
+    let first = assert_fits(&tools, ACTIVITY_TOOL, &answer);
+    let mut seen = ids(first);
+    assert_eq!(seen[0], "d");
+    let later = with_rows(after);
+    let mut cursor = first["next_cursor"].clone();
+    while cursor.is_string() {
+        let mut next = args.clone();
+        next["cursor"] = cursor;
+        let answer = call(&later, ACTIVITY_TOOL, next);
+        let page = assert_fits(&later, ACTIVITY_TOOL, &answer);
+        seen.extend(ids(page));
+        cursor = page["next_cursor"].clone();
+    }
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c", "d"], "{seen:?}");
+}
+
 #[test]
 fn activity_narrows_by_window_type_and_symbol() {
     let t = tools();
