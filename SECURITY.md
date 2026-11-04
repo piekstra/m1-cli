@@ -175,8 +175,9 @@ so, because a renewal in flight can store them again. Run it again in a minute t
 settle it.
 
 `auth logout` does not touch `mcp-http-token` and does not stop `m1f mcp --http`.
-`auth logout --forget` removes the token from the keychain too, and says so, but a
-running server keeps the token it started with. Either way the server stays up, its
+`auth logout --forget` removes the token from the keychain too, if there is one, and says what
+that does not end: a running server keeps the token it started with, and a token supplied through
+`$M1F_MCP_TOKEN` is not stored, so the logout cannot reach it. Either way the server stays up, its
 callers get auth errors, and **a later login silently restores the token holder's
 access**. Revoke that access separately:
 

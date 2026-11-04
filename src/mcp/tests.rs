@@ -733,16 +733,36 @@ fn an_undecodable_id_blob_never_reaches_a_result() {
         DOCUMENTS_TOOL,
         json!({"type": "tax-form", "response_format": "detailed"}),
     );
-    let out = assert_fits(&t, DOCUMENTS_TOOL, &r);
+    assert!(r.is_error(), "{}", r.text());
+    assert!(r.text().starts_with("upstream:"), "{}", r.text());
     assert!(!r.text().contains(&blob), "{}", r.text());
-    let undecoded = out["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["date"] == "2026-02-01")
-        .unwrap();
-    assert!(undecoded.get("id").is_none(), "{undecoded}");
-    assert_eq!(undecoded["name"], "Untitled document");
+}
+
+#[test]
+fn a_row_with_no_id_is_an_upstream_error() {
+    let mut fixtures = Fixtures::new();
+    fixtures.activity[0].as_object_mut().unwrap().remove("id");
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, ACTIVITY_TOOL, json!({"since": "2020-01-01"}));
+    assert!(r.is_error(), "{}", r.text());
+    assert!(r.text().starts_with("upstream:"), "{}", r.text());
+    assert!(r.text().contains("no id"), "{}", r.text());
+}
+
+/// The same for a lot sold, which holds its place the same way.
+#[test]
+fn a_gain_with_no_id_is_an_upstream_error() {
+    let mut fixtures = Fixtures::new();
+    fixtures.lots[0].as_object_mut().unwrap().remove("id");
+    let t = M1Tools::new(fixtures);
+    let r = call(
+        &t,
+        GAINS_TOOL,
+        json!({"since": "2026-01-01", "until": "2026-12-31"}),
+    );
+    assert!(r.is_error(), "{}", r.text());
+    assert!(r.text().starts_with("upstream:"), "{}", r.text());
+    assert!(r.text().contains("no id"), "{}", r.text());
 }
 
 // ---- m1_realized_gains ------------------------------------------------------

@@ -640,7 +640,7 @@ impl<S: Source> M1Tools<S> {
                     share_price: amount(&row, "share_price").filter(|_| detailed),
                     id: text(&row, "id").filter(|_| detailed),
                 };
-                let key = row_key(date.as_deref().unwrap_or_default(), acct, &row);
+                let key = row_key(date.as_deref().unwrap_or_default(), acct, &row)?;
                 matched.push((key, item));
             }
         }
@@ -686,16 +686,20 @@ impl<S: Source> M1Tools<S> {
         let matched = docs
             .into_iter()
             .map(|d| {
+                // `listed` blanks an id it cannot show, which is M1 changing its id blob.
+                if d.id.is_empty() {
+                    return Err(no_id("document"));
+                }
                 let key = PositionKey::new(d.date.as_deref().unwrap_or_default(), &d.id);
                 let item = DocumentItem {
                     date: d.date,
                     name: d.name,
                     kind: d.category.map(|c| c.to_ascii_lowercase().replace('_', "-")),
-                    id: Some(d.id).filter(|id| detailed && !id.is_empty()),
+                    id: detailed.then_some(d.id),
                 };
-                (key, item)
+                Ok((key, item))
             })
-            .collect();
+            .collect::<Result<Vec<_>, ToolError>>()?;
         ToolOutput::new(&DocumentsOut {
             page: page.page(matched, Order::Descending, "type or since/until")?,
         })
@@ -768,7 +772,7 @@ impl<S: Source> M1Tools<S> {
                     cusip: text(&row, "cusip").filter(|_| detailed),
                     id: text(&row, "id").filter(|_| detailed),
                 };
-                matched.push((row_key(&sold, acct, &row), item));
+                matched.push((row_key(&sold, acct, &row)?, item));
             }
         }
         ToolOutput::new(&GainsOut {
@@ -782,9 +786,18 @@ impl<S: Source> M1Tools<S> {
 }
 
 /// Where a row belongs in a newest-first list across accounts: its date, then its account and id.
-fn row_key(date: &str, acct: &AccountRef, row: &Value) -> PositionKey {
-    let id = text(row, "id").unwrap_or_default();
-    PositionKey::new(date, &format!("{}:{id}", acct.id))
+fn row_key(date: &str, acct: &AccountRef, row: &Value) -> Result<PositionKey, ToolError> {
+    let id = text(row, "id").ok_or_else(|| no_id("row"))?;
+    Ok(PositionKey::new(date, &format!("{}:{id}", acct.id)))
+}
+
+/// A row with no id could not hold its place in a position cursor, so it is a changed provider and
+/// not a row left to the count within its day.
+fn no_id(what: &str) -> ToolError {
+    ToolError::upstream(format!(
+        "M1 sent a {what} with no id, so its place in this list cannot be held and the list is \
+         not reported"
+    ))
 }
 
 /// Exact sums in cents: a float would drift on a year of lots.

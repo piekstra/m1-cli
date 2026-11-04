@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.2 — 2026-11-04
+
+- `m1_activity`, `m1_documents` and `m1_realized_gains`: a row with no id is an upstream error, including a document whose id blob no longer decodes. They used to fall to the count within their day.
+- `auth logout --forget` speaks to a server on `$M1F_MCP_TOKEN` too, which never had a keychain item to remove.
+- cli-common v0.29.0, up from v0.27.0.
+
 ## v0.6.1 — 2026-11-03
 
 Moves to cli-common v0.27.0.
