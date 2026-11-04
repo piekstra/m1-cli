@@ -179,6 +179,7 @@ settle it.
 running server keeps the token it started with. Either way the server stays up, its
 callers get auth errors, and **a later login silently restores the token holder's
 access**. Revoke that access separately:
+A token supplied through `$M1F_MCP_TOKEN` is not stored, so the logout cannot reach it: to end it, unset the variable and stop the server.
 
 - **Invalidate the token:** `m1f mcp --new-token --overwrite`, then restart the
   server (`launchctl kickstart -k gui/$(id -u)/com.piekstra.m1f-mcp-http`). The
