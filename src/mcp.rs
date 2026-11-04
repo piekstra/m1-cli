@@ -8,7 +8,8 @@
 //! `m1_documents` (statements and tax forms, listed, never downloaded),
 //! `m1_realized_gains` (closed lots and their gains by sale date) and
 //! `m1_trading` (queued orders, auto-invest, the next trade window, pending
-//! transfers). Nothing here can write: a tool sends only the fixed query
+//! transfers, without ids or who is on the other side of a transfer). Nothing
+//! here can write: a tool sends only the fixed query
 //! documents its command does, and takes no document from its caller.
 //!
 //! Provider access goes through [`Source`], the per-target seam of
@@ -24,6 +25,7 @@ use std::time::Duration;
 
 use pk_cli_core::{dates, CliError, CommonArgs, Money, RangeArgs};
 use pk_cli_documents::Document;
+use pk_cli_mcp::shape::{ENVELOPE_RESERVE, SIZE_BUDGET};
 use pk_cli_mcp::{
     hold_within, parse_args, ListArgs, Order, Page, PageRequest, PositionKey, PositionRequest,
     Server, ToolDef, ToolError, ToolOutput, Toolset,
@@ -31,7 +33,7 @@ use pk_cli_mcp::{
 use pk_cli_secrets::CredentialStore;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::commands::accounts::{self, AccountRef};
 use crate::commands::{activity, documents, holdings, lots, networth, positions, trading, Ctx};
@@ -501,21 +503,31 @@ pub struct GainsOut {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TradingArgs {
-    /// Only this account (name or id).
+    /// Account name.
     #[serde(default)]
     pub account: Option<String>,
 }
 
-/// Each account is `m1f trading --json`'s entry with its amounts as decimal
-/// strings. Its fields go undeclared here because declaring them would not fit
-/// the 8,000 characters the definitions share; the description names them, and
-/// `the_trading_tool_returns_the_commands_data` holds them to the command's.
-/// One entry per account, as with `m1_portfolio`'s `accounts`, so it takes no
-/// `limit` or `cursor`: `account` narrows a result that is too large.
+/// One entry per account, built by `trading_entry`. Its fields go undeclared
+/// because declaring them would not fit the 8,000 characters the definitions
+/// share, and `tests/fixtures/mcp/m1_trading.json` pins them instead. The tool
+/// takes no `limit` or `cursor`: `cap_estimates` keeps the result in size.
+/// `truncated` and `hint` carry no doc comments, which would cost that budget too.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TradingOut {
     pub accounts: Vec<serde_json::Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub hint: Option<String>,
 }
+
+/// The `hint` when estimated rows were cut. It asks for no id, because the tool gives none.
+const TRADING_HINT: &str = "Estimated rows are cut where an account's estimated.truncated is \
+                            true; everything else is whole. `account` narrows to one account, \
+                            which leaves it more rows. For every row, the user runs `m1f accounts \
+                            list` for its id, then `m1f trading --json -a <id>` in a terminal.";
 
 // ---- the toolset ------------------------------------------------------------
 
@@ -593,10 +605,10 @@ impl<S: Source> Toolset for M1Tools<S> {
             ToolDef::read(
                 TRADING_TOOL,
                 "M1 trading",
-                "Shows what is queued in each M1 account and when it trades. Use it for whether a \
-                 sale is queued and what cash or transfer waits. Returns accounts with status, \
-                 auto_invest, trading, orders, estimated, cash, total_value and \
-                 pending_transfers; null means no figure. Narrow with account.",
+                "Shows each account's queued trades and next window. Use it for a pending sale. \
+                 Returns accounts: auto_invest, trading, orders, estimated, cash, \
+                 pending_transfers. Account keys always appear, null means M1 gave no figure, \
+                 amounts are decimal strings. Narrow with account.",
             )
             .input::<TradingArgs>()
             .output::<TradingOut>(),
@@ -847,16 +859,110 @@ impl<S: Source> M1Tools<S> {
         let _turn = self.source.turn().map_err(tool_err)?;
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;
-        let mut accounts = Vec::new();
+        let mut entries = Vec::new();
         for acct in pick(&all, account)? {
             let node = self.source.trading(&acct.id).await.map_err(tool_err)?;
-            let dto = trading::account_dto(&node).map_err(tool_err)?;
-            if let Value::Object(fields) = plain_amounts(dto) {
-                accounts.push(fields);
+            entries.push(trading_entry(acct, &node)?);
+        }
+        cap_estimates(&mut entries, SIZE_BUDGET - ENVELOPE_RESERVE);
+        let truncated = entries.iter().any(|e| e["estimated"]["truncated"] == true);
+        let accounts = entries
+            .into_iter()
+            .filter_map(|e| match e {
+                Value::Object(fields) => Some(fields),
+                _ => None,
+            })
+            .collect();
+        ToolOutput::new(&TradingOut {
+            accounts,
+            truncated,
+            hint: truncated.then(|| TRADING_HINT.to_string()),
+        })
+    }
+}
+
+/// One account of `m1_trading`: `m1f trading --json`'s entry with amounts as strings and without
+/// what stays in the terminal. `name` is the label `pick` matches, so it is all `account` needs.
+fn trading_entry(acct: &AccountRef, node: &Value) -> Result<Value, ToolError> {
+    let dto = trading::account_dto(node).map_err(tool_err)?;
+    let mut entry = plain_amounts(dto);
+    if let Some(fields) = entry.as_object_mut() {
+        fields.retain(|key, _| key != "id");
+    }
+    entry["name"] = Value::from(label(acct));
+    if let Some(items) = entry["pending_transfers"]["items"].as_array_mut() {
+        items.iter_mut().for_each(without_the_other_party);
+    }
+    if let Some(estimated) = entry["estimated"].as_object_mut() {
+        let source = &node["estimatedTrading"];
+        estimated.insert("sell_count".into(), source["sells"]["total"].clone());
+        estimated.insert("buy_count".into(), source["buys"]["total"].clone());
+    }
+    Ok(entry)
+}
+
+/// A transfer with no id and nobody's name. `title` goes with the names: M1 writes it as "<from>
+/// to <to>" (`reads/transfers.json`, whose shape was seen live). Each side keeps its `type`, which
+/// is what tells a check apart when `is_check` is false.
+fn without_the_other_party(transfer: &mut Value) {
+    if let Some(fields) = transfer.as_object_mut() {
+        fields.retain(|key, _| key != "id" && key != "title");
+    }
+    for side in ["from", "to"] {
+        if transfer[side].is_object() {
+            transfer[side] = json!({ "type": transfer[side]["type"] });
+        }
+    }
+}
+
+/// Cut estimated rows until `entries` fit in `budget` characters, counted as pk-cli-mcp counts a
+/// page: a row and its comma. Everything else stays whatever its size, so orders and transfers
+/// are never what gets cut. Rows go back one from each side of each account in turn, so one long
+/// estimate cannot crowd out another account's. An account that lost rows says so.
+fn cap_estimates(entries: &mut [Value], budget: usize) {
+    let mut waiting = Vec::new();
+    for (at, entry) in entries.iter_mut().enumerate() {
+        for side in ["sells", "buys"] {
+            let side_rows = entry
+                .get_mut("estimated")
+                .and_then(|estimated| estimated.get_mut(side))
+                .and_then(Value::as_array_mut);
+            if let Some(rows) = side_rows {
+                let rows = std::mem::take(rows);
+                waiting.push((at, side, rows.into_iter().peekable()));
             }
         }
-        ToolOutput::new(&TradingOut { accounts })
     }
+    let mut room = budget.saturating_sub(serialized_size(entries));
+    let mut placed = true;
+    while placed {
+        placed = false;
+        for (at, side, rows) in &mut waiting {
+            let Some(size) = rows.peek().map(|row| serialized_size(row) + 1) else {
+                continue;
+            };
+            if size > room {
+                continue;
+            }
+            room -= size;
+            placed = true;
+            if let (Some(row), Some(kept)) =
+                (rows.next(), entries[*at]["estimated"][*side].as_array_mut())
+            {
+                kept.push(row);
+            }
+        }
+    }
+    for (at, _, mut rows) in waiting {
+        if rows.peek().is_some() {
+            entries[at]["estimated"]["truncated"] = Value::Bool(true);
+        }
+    }
+}
+
+/// Characters of compact JSON, the measure every limit in pk-cli-mcp uses.
+fn serialized_size<T: Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_string(value).map_or(0, |text| text.chars().count())
 }
 
 /// Where a row belongs in a newest-first list across accounts: its date, then its account and id.

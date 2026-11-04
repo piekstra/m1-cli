@@ -218,12 +218,16 @@ with the session `m1f auth login --browser` stored in your OS keychain.
 | `m1_activity` | What happened over a period? Trades, deposits, withdrawals and dividends by `since`/`until` dates (year to date by default), `account`, `type` (`Trade`, `Cash`, `Position`) and `symbol` |
 | `m1_documents` | Which statements and tax forms exist? Listed by `type` (`tax-form` for 1099s) and `since`/`until`; never downloaded (`m1f documents download` does that) |
 | `m1_realized_gains` | What did I realize this year? Closed lots by sale date, with exact short-term, long-term and wash-sale totals; taxable accounts unless `account` names an IRA |
-| `m1_trading` | Is a sale queued, and when does it trade? Each account's queued orders, rebalances and estimated trades, auto-invest, the next window, cash available for withdrawal and pending transfers, narrowed by `account`; a figure M1 did not give is null |
+| `m1_trading` | Is a sale queued, and when does it trade? Each account's queued orders, rebalances and estimated trades, auto-invest, the next window, cash available for withdrawal and pending transfers, narrowed by `account` (its name); a figure M1 did not give is null. It leaves out ids and who is on the other side of a transfer: each side keeps its type, such as `PHYSICAL_CHECK` |
 
 Results are concise by default (`response_format: "detailed"` adds ids and
 provider detail), 25 records a page with a cursor for more, and never larger
 than about 32,000 characters. `m1_trading` returns one entry per account
-instead of pages. Accounts are named, not numbered. Descriptions
+instead of pages. At that size it cuts estimated rows and keeps each account's
+orders, pending transfers, estimated totals and row counts, then sets `truncated`
+and a `hint` pointing to `m1f trading --json` in a terminal, which lists the rows.
+Orders and transfers are never cut, so they alone can pass 32,000 characters; past
+64,000 the call fails and asks you to narrow it. Accounts are named, not numbered. Descriptions
 come from M1 and other parties; the server tells Claude to treat them as
 data, not instructions.
 

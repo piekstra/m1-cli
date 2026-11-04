@@ -101,6 +101,7 @@ fn all_fixtures() -> Vec<(&'static str, Value)> {
             "reads/trading-unavailable.json",
             fixture("reads/trading-unavailable.json"),
         ),
+        ("mcp/m1_trading.json", fixture("mcp/m1_trading.json")),
     ]
 }
 

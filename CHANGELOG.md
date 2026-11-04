@@ -13,7 +13,9 @@ yet run against a live account.
 - Auto-invest reads as on when `maxCashThreshold` is non-null. That comes from the schema's
   description and is not yet confirmed on a real account.
 - `m1f mcp` serves five read-only tools. `m1_trading` returns the same data with amounts as decimal
-  strings.
+  strings, without account or transfer ids, without a transfer's `title`, and with only the `type`
+  of each side of a transfer. Over 32,000 characters it cuts estimated rows, keeps each account's
+  orders, transfers, totals and row counts, and sets `truncated` and a `hint`.
 - All five definitions fit in 8,000 characters through shorter text on the list tools' `limit`,
   `cursor` and `response_format`, a shorter `m1_portfolio` title and description, and a shorter
   `m1_documents` description.

@@ -67,7 +67,13 @@ with `--http` (below). It uses the
 session already in the keychain, exactly as the commands do, refreshing it
 in place, and never signs in: a missing or lapsed session is an error asking
 the user to run `m1f auth login --browser --overwrite` in a terminal. No tool downloads
-a document or emits a document's raw id or link. The Claude Desktop
+a document or emits a document's raw id or link. `m1_trading` sends no account
+or transfer id, and of a transfer's parties only each side's type (such as
+`PHYSICAL_CHECK`); it leaves out `title`, which M1 writes as "<from> to <to>".
+`m1f trading --json` keeps all of these, because it stays on this computer. M1's
+other wording about a transfer (`description`, `timing_description`,
+`pending_transfers.summary`) passes through as sent. Its wording has not been
+observed on a real account, so it could name the other side. The Claude Desktop
 extension (`.mcpb`) takes no settings and so holds no credential of its
 own; on macOS its bundled binary needs the user's approval, once, to read
 the `piekstra.m1f` keychain item.

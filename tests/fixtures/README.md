@@ -31,6 +31,7 @@ The *values* remain fabricated dummies; the *shapes* are real.
 | `reads/summary.json` | **HIGH** | `Account.balance.investments.{totalCost,totalValue,totalUnrealizedGain}` + `fundingTotals.totalsByYear`. Live-verified 2026-08-18. |
 | `reads/trading.json` | **MEDIUM** | `AccountTrading`: an unlocked and a locked sell, a buy, a rebalance, estimated trades, auto-invest on and a pending check. Every field, type and enum member is schema-verified (2026-11-04, the file runs through the query against the schema with no error). None has been seen live, so `docs/api.md` ("Trading status") lists what the schema leaves open, such as the sign of an estimated sell. |
 | `reads/trading-idle.json` | **MEDIUM** | The same read with nothing queued: empty lists, zero totals, `maxCashThreshold: null`. Same basis. |
+| `mcp/m1_trading.json` | **Pinned output** | Not a response from M1: exactly what the `m1_trading` tool returns for `reads/trading-idle.json`, `reads/trading.json` and `reads/trading-unavailable.json`. The tool's output schema leaves each account's fields undeclared, so this file is what holds them. It carries no account or transfer id and no party's name. |
 | `reads/trading-unavailable.json` | **MEDIUM** | The same read with every field the schema lets be null set to null, so a list M1 did not give differs from an empty one. `isLiquidating`, `autoInvestTriggerMinimum`, `balance` and `nickname` are non-null in the schema and keep values. Same basis. |
 
 `docs/api.md` carries the same distinction and lists what is still unverified.

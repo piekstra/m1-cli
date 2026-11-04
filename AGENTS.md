@@ -192,8 +192,12 @@ edge.
   before adding a field. To fit the fifth, `short_list_args` shortens what
   `ListArgs` says of its arguments, and `TradingOut` leaves each account's
   fields undeclared: its description names them, and
-  `the_trading_tool_returns_the_commands_data` holds them to
-  `trading::account_dto`.
+  `tests/fixtures/mcp/m1_trading.json` pins them.
+- `m1_trading` is not `m1f trading --json`. `trading_entry` drops account and
+  transfer ids and each transfer's `title`, and cuts `from` and `to` to their
+  `type`, because results can leave this computer (SECURITY.md).
+  `cap_estimates` cuts estimated rows to `SIZE_BUDGET`, in turn across accounts,
+  and never orders or transfers.
 - Releases attach `m1f-<version>.mcpb`, a Claude Desktop extension with no
   settings: it reads the keychain session.
 - `m1f mcp --http --port <PORT>` (pk-cli-mcp's `http` feature) serves the

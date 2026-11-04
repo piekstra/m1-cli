@@ -610,7 +610,18 @@ response is exit 5, so a renamed `maxCashThreshold` cannot read as off.
 | `TransferInstance.amount` | Null when the exact amount is not yet known. |
 | `TransferInstance.id` | The same `TransferInstance:{"transferId":…}` blob as `TransfersHistory`. Only the inner id is emitted. |
 | `totalValue.hasValue` | "True if the value is greater than zero". `total_value` is null when it is false, as in `accounts list`, so an emptied account shows null rather than 0. |
+| `TransferInstance.title` | `TransfersHistory` shows the form "<from> to <to>", so it repeats both parties' names. `m1f trading` keeps it; `m1_trading` does not. |
 | `nextTradingTime`, `lastEstimatedTime` | Kept at full precision, because the time of day is the point of them. `start_date` and `end_date` are dates. |
+
+`m1_trading` returns the same entry with four differences, and
+`tests/fixtures/mcp/m1_trading.json` pins them:
+
+| Difference | Why |
+| --- | --- |
+| Amounts are decimal strings | As every tool returns them. |
+| No account or transfer `id`, no transfer `title`, and `from` and `to` hold only `type` | Tool results can leave this computer (SECURITY.md). `account` takes the name, so no id is needed, and `to.type` still tells a check apart. |
+| `name` is the label the `account` argument matches | It comes from the account read, so a returned name always finds its account. |
+| `estimated.sell_count` and `buy_count`, M1's `total` for each side | They survive a cut. Estimated rows are the only thing cut: up to `SIZE_BUDGET` less `ENVELOPE_RESERVE`, one row from each side of each account in turn. `estimated.truncated` marks an account that lost rows, and top-level `truncated` and `hint` state it. |
 
 ### Pagination
 
@@ -677,6 +688,7 @@ Short, and none of it blocks the tool:
 | `isLocked` direction | The schema's description contradicts itself. The fixtures pair `isLocked: false` with `UNLOCKED`, the reading of its first sentence. |
 | A sale set on the root slice | Whether `portfolioSlicesWithSellOrders` lists the root is unobserved. `orders.root_order` shows it either way. |
 | Sign of estimates and transfers | Whether an estimated sell's `amount`, `totalSellAmount` and a pending transfer's `amount` are negative is not documented. The fixtures use positive values. |
+| Names in M1's other transfer wording | Whether `description`, `timing_description` and `pendingTransferInstanceSummary` can name the other party is unobserved. `m1_trading` passes them as sent. |
 | `isCheck` on an IRA check | The description names Spend Checking only. What a rollover check from an IRA reads is unobserved. |
 | Trading strings at runtime | The format of `nextTradingTime`, `lastEstimatedTime` and `pendingTransferInstanceSummary`, all `String`, is unobserved. A string passes through as sent. |
 | `first` on estimated trades | The largest page M1 accepts on `sells` and `buys` is unobserved. The command asks for 100. |
