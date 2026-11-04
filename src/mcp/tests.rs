@@ -30,6 +30,8 @@ struct Fixtures {
     activity: Vec<Value>,
     documents: Vec<Document>,
     lots: Vec<Value>,
+    /// Trading nodes, one per account on the accounts fixture.
+    trading: Vec<Value>,
     /// Report every walk as stopped by the page ceiling.
     capped: bool,
     /// Every source call, as `method:arg`.
@@ -50,6 +52,11 @@ impl Fixtures {
         let activity = fixture(include_str!("../../tests/fixtures/reads/activity.json"));
         let documents = fixture(include_str!("../../tests/fixtures/reads/documents.json"));
         let lots = fixture(include_str!("../../tests/fixtures/reads/lots.json"));
+        let trading = [
+            include_str!("../../tests/fixtures/reads/trading-idle.json"),
+            include_str!("../../tests/fixtures/reads/trading.json"),
+            include_str!("../../tests/fixtures/reads/trading-unavailable.json"),
+        ];
         Self {
             accounts: parse::nodes(&accounts, &["viewer", "accounts"]).unwrap(),
             balances: parse::at(&net_worth, &["viewer", "overview", "balances"])
@@ -73,6 +80,10 @@ impl Fixtures {
                 .iter()
                 .map(|n| lots::lot_dto(n).unwrap())
                 .filter(|l| l.get("closed").is_some())
+                .collect(),
+            trading: trading
+                .iter()
+                .map(|raw| fixture(raw)["node"].clone())
                 .collect(),
             capped: false,
             calls: Mutex::new(Vec::new()),
@@ -175,6 +186,16 @@ impl Source for Fixtures {
         };
         Ok((rows, self.capped))
     }
+
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError> {
+        self.record(format!("trading:{account_id}"))?;
+        Ok(self
+            .trading
+            .iter()
+            .find(|n| n["id"] == account_id)
+            .expect("a trading fixture for each account")
+            .clone())
+    }
 }
 
 fn tools() -> M1Tools<Fixtures> {
@@ -207,7 +228,13 @@ fn the_tools_conform_to_the_mcp_profile() {
 fn the_definitions_stay_small() {
     let t = tools();
     let mut total = 0;
-    for name in [PORTFOLIO_TOOL, ACTIVITY_TOOL, DOCUMENTS_TOOL, GAINS_TOOL] {
+    for name in [
+        PORTFOLIO_TOOL,
+        ACTIVITY_TOOL,
+        DOCUMENTS_TOOL,
+        GAINS_TOOL,
+        TRADING_TOOL,
+    ] {
         let size = definition_size(&t, name);
         eprintln!("{name}: {size} characters");
         assert!(size < 2_500, "{name} takes {size} characters");
@@ -376,6 +403,7 @@ fn every_tool_takes_one_turn() {
             GAINS_TOOL,
             json!({"since": "2026-01-01", "until": "2026-12-31"}),
         ),
+        (TRADING_TOOL, json!({})),
     ] {
         let t = tools();
         let r = call(&t, tool, args);
@@ -872,6 +900,335 @@ fn a_lot_amount_that_is_not_a_decimal_fails_the_totals() {
     assert!(text.contains("12,50"), "{text}");
 }
 
+// ---- m1_trading -------------------------------------------------------------
+
+/// Exactly what the tool emits for the three fixture accounts: the output schema leaves their
+/// fields undeclared, so this file is what holds them.
+#[test]
+fn the_trading_tool_returns_the_commands_data() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let want: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/mcp/m1_trading.json"))
+            .expect("the expected output parses");
+    assert_eq!(out, &want);
+    assert_eq!(
+        t.source().calls(),
+        [
+            "accounts",
+            "trading:acct-000000001",
+            "trading:acct-000000002",
+            "trading:acct-000000003"
+        ]
+    );
+}
+
+/// The command keeps ids and the other party's name, because it stays on this computer. The tool
+/// sends neither, in any field: `title` repeats the names as "<from> to <to>".
+#[test]
+fn the_trading_tool_sends_no_id_and_no_party_name() {
+    let t = tools();
+    let dto = trading::account_dto(&t.source().trading[1]).unwrap();
+    let local = &dto["pending_transfers"]["items"][0];
+    assert_eq!(dto["id"], "acct-000000002");
+    assert_eq!(local["id"], "act-000000020");
+    assert_eq!(local["to"]["name"], "Example Custodian");
+    assert_eq!(local["title"], "Roth IRA to Example Custodian");
+
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    for needle in ["acct-", "act-", "Example Custodian"] {
+        assert!(!r.text().contains(needle), "{needle} in {}", r.text());
+    }
+    for account in out["accounts"].as_array().unwrap() {
+        assert!(account.get("id").is_none());
+    }
+    let sent = &out["accounts"][1]["pending_transfers"]["items"][0];
+    assert!(sent.get("id").is_none(), "{sent}");
+    assert!(sent.get("title").is_none(), "{sent}");
+    assert_eq!(sent["from"], json!({"type": "INVEST"}));
+    assert_eq!(sent["to"], json!({"type": "PHYSICAL_CHECK"}));
+}
+
+/// With no id to go on, the name the tool returns has to find its account again.
+#[test]
+fn every_name_the_trading_tool_returns_finds_that_account() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let everyone = out["accounts"].as_array().unwrap();
+    assert_eq!(everyone.len(), 3);
+    for account in everyone {
+        let name = account["name"].as_str().unwrap();
+        for asked in [name.to_string(), name.to_uppercase()] {
+            let t = tools();
+            let r = call(&t, TRADING_TOOL, json!({"account": asked}));
+            let found = assert_fits(&t, TRADING_TOOL, &r);
+            assert_eq!(found["accounts"], json!([account]), "{asked}");
+        }
+    }
+}
+
+/// The name comes from the account read `account` is matched against, so a name the trading read
+/// spells otherwise cannot strand the model.
+#[test]
+fn the_trading_name_is_the_one_account_matches() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1]["nickname"] = json!("Spelled Otherwise");
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({"account": "Roth IRA"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    assert_eq!(out["accounts"][0]["name"], "Roth IRA");
+}
+
+/// `rows` estimated trades on one side of an account, with M1's count of them.
+fn estimated_rows(side: &str, rows: usize) -> Value {
+    let edges: Vec<Value> = (0..rows)
+        .map(|i| {
+            json!({ "node": {
+                "amount": 10.5,
+                "isBuy": side == "buys",
+                "of": { "symbol": format!("XM{i:04}"), "name": "Example Long Estimate Fund" },
+                "pill": null
+            } })
+        })
+        .collect();
+    json!({
+        "total": rows,
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "edges": edges,
+    })
+}
+
+fn with_long_estimates(mut account: Value, sells: usize, buys: usize) -> Value {
+    account["estimatedTrading"] = json!({
+        "hasTrades": true,
+        "totalSellAmount": 52500.0,
+        "totalBuyAmount": 21000.0,
+        "lastEstimatedTime": "2026-01-14T20:00:00.000Z",
+        "sells": estimated_rows("sells", sells),
+        "buys": estimated_rows("buys", buys),
+    });
+    account
+}
+
+fn is_stated_as_cut(out: &Value) {
+    assert_eq!(out["truncated"], true);
+    let hint = out["hint"].as_str().unwrap();
+    assert!(hint.contains("m1f trading --json -a <id>"), "{hint}");
+    // The tool gives no id, so the hint says where one comes from.
+    assert!(hint.contains("m1f accounts list"), "{hint}");
+}
+
+#[test]
+fn a_long_estimate_is_cut_and_says_so_and_the_rest_survives() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1] = with_long_estimates(fixtures.trading[1].clone(), 5_000, 3);
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({"account": "Roth IRA"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    is_stated_as_cut(out);
+
+    let roth = &out["accounts"][0];
+    assert_eq!(roth["orders"]["sells"].as_array().unwrap().len(), 2);
+    assert_eq!(roth["orders"]["buys"].as_array().unwrap().len(), 1);
+    assert_eq!(roth["orders"]["rebalances"].as_array().unwrap().len(), 1);
+    assert_eq!(roth["pending_transfers"]["items"][0]["is_check"], true);
+
+    let est = &roth["estimated"];
+    assert_eq!(est["truncated"], true);
+    assert_eq!(est["has_trades"], true);
+    assert_eq!(est["total_sell"], "52500.00");
+    assert_eq!(est["total_buy"], "21000.00");
+    assert_eq!(est["last_estimated"], "2026-01-14T20:00:00.000Z");
+    assert_eq!(est["sell_count"], 5_000);
+    assert_eq!(est["buy_count"], 3);
+
+    // The short side is whole, and the long one is cut in order, close to the limit.
+    assert_eq!(est["buys"].as_array().unwrap().len(), 3);
+    let sells = est["sells"].as_array().unwrap();
+    assert_eq!(sells[0]["symbol"], "XM0000");
+    assert!(sells.len() < 5_000);
+    assert!(r.text().chars().count() > SIZE_BUDGET - 2 * ENVELOPE_RESERVE);
+}
+
+/// Each account gets its turn, so the first cannot take the whole budget.
+#[test]
+fn several_long_estimates_share_the_limit() {
+    let mut fixtures = Fixtures::new();
+    for account in &mut fixtures.trading {
+        *account = with_long_estimates(account.clone(), 5_000, 5_000);
+    }
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    is_stated_as_cut(out);
+
+    let accounts = out["accounts"].as_array().unwrap();
+    assert_eq!(accounts[1]["orders"]["sells"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        accounts[1]["pending_transfers"]["items"][0]["is_check"],
+        true
+    );
+    let lengths: Vec<usize> = accounts
+        .iter()
+        .flat_map(|a| ["sells", "buys"].map(|s| a["estimated"][s].as_array().unwrap().len()))
+        .collect();
+    let (least, most) = (lengths.iter().min().unwrap(), lengths.iter().max().unwrap());
+    assert!(*least > 0, "{lengths:?}");
+    assert!(most - least <= 1, "{lengths:?}");
+    for account in accounts {
+        assert_eq!(account["estimated"]["truncated"], true);
+        assert_eq!(account["estimated"]["sell_count"], 5_000);
+    }
+}
+
+/// Rows left over from one account's short estimate go to the long one.
+#[test]
+fn a_short_estimate_leaves_its_share_to_a_long_one() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1] = with_long_estimates(fixtures.trading[1].clone(), 5_000, 0);
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    is_stated_as_cut(out);
+    // The other two accounts lost nothing, and only the long one is marked.
+    assert_eq!(out["accounts"][0]["estimated"]["truncated"], false);
+    assert!(out["accounts"][2]["estimated"].is_null());
+    assert_eq!(out["accounts"][1]["estimated"]["truncated"], true);
+    assert!(r.text().chars().count() > SIZE_BUDGET - 2 * ENVELOPE_RESERVE);
+}
+
+/// Orders are never what gets cut. Past the budget on their own they still come back whole, up to
+/// pk-cli-mcp's hard limit, with every estimated row gone and the cut stated.
+#[test]
+fn orders_over_the_budget_come_back_whole() {
+    let mut fixtures = Fixtures::new();
+    let order = fixtures.trading[1]["portfolioSlicesWithSellOrders"][0].clone();
+    fixtures.trading[1]["portfolioSlicesWithSellOrders"] = Value::Array(vec![order; 300]);
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({"account": "Roth IRA"}));
+    assert!(!r.is_error(), "{}", r.text());
+    assert!(r.text().chars().count() > SIZE_BUDGET);
+    let out = r.structured().unwrap();
+    is_stated_as_cut(out);
+    let roth = &out["accounts"][0];
+    assert_eq!(roth["orders"]["sells"].as_array().unwrap().len(), 300);
+    assert_eq!(roth["estimated"]["sells"], json!([]));
+    assert_eq!(roth["estimated"]["sell_count"], 2);
+    assert_eq!(roth["estimated"]["total_sell"], "1000.00");
+}
+
+/// Rows the command's page ceiling left out are missing here too, and say so the same way.
+#[test]
+fn rows_the_page_ceiling_cut_are_stated_too() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1]["estimatedTrading"]["sells"]["total"] = json!(4_000);
+    let t = M1Tools::new(fixtures);
+    let r = call(&t, TRADING_TOOL, json!({"account": "Roth IRA"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    is_stated_as_cut(out);
+    assert_eq!(out["accounts"][0]["estimated"]["sell_count"], 4_000);
+    assert_eq!(
+        out["accounts"][0]["estimated"]["sells"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_queued_sale_reads_in_decimal_strings() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({"account": "roth ira"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let got = out["accounts"].as_array().unwrap();
+    assert_eq!(got.len(), 1);
+    let roth = &got[0];
+    assert_eq!(roth["name"], "Roth IRA");
+    assert_eq!(roth["auto_invest"]["on"], true);
+    assert_eq!(roth["auto_invest"]["threshold"], "100.00");
+    assert_eq!(roth["orders"]["sells"][0]["amount"], "-750.50");
+    assert_eq!(roth["trading"]["next_window"], "MORNING");
+    assert_eq!(roth["cash"]["available_for_withdrawal"], "0.00");
+    assert_eq!(roth["pending_transfers"]["items"][0]["is_check"], true);
+    assert_eq!(t.source().calls(), ["accounts", "trading:acct-000000002"]);
+}
+
+#[test]
+fn a_result_that_fits_is_not_marked_cut() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    assert!(out.get("truncated").is_none());
+    assert!(out.get("hint").is_none());
+}
+
+#[test]
+fn a_trading_figure_m1_did_not_give_stays_null() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({"account": "Joint Brokerage"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let joint = &out["accounts"][0];
+    assert!(joint["estimated"].is_null());
+    assert!(joint["orders"]["sells"].is_null());
+    assert!(joint["cash"]["available"].is_null());
+    assert!(joint["total_value"].is_null());
+    assert_eq!(joint["auto_invest"]["on"], false);
+}
+
+#[test]
+fn trading_for_an_unknown_account_lists_the_names_that_exist() {
+    let t = tools();
+    let text = err(&call(&t, TRADING_TOOL, json!({"account": "Rainy Day"}))).to_string();
+    assert!(text.starts_with("not_found:"), "{text}");
+    assert!(text.contains("Roth IRA"), "{text}");
+}
+
+/// An account whose shape changed fails the call: a renamed field must not reach
+/// the model as a setting the account does not have.
+#[test]
+fn a_trading_shape_change_is_upstream() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1]
+        .as_object_mut()
+        .unwrap()
+        .remove("maxCashThreshold");
+    let t = M1Tools::new(fixtures);
+    let text = err(&call(&t, TRADING_TOOL, json!({}))).to_string();
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("maxCashThreshold"), "{text}");
+}
+
+#[test]
+fn the_shortened_list_arguments_keep_their_limits_and_choices() {
+    for tool in tools().tools() {
+        let props = &tool.input_schema["properties"];
+        if tool.name == TRADING_TOOL {
+            assert!(props.get("limit").is_none());
+            continue;
+        }
+        assert_eq!(props["limit"]["maximum"], 200, "{}", tool.name);
+        assert_eq!(
+            props["limit"]["description"], "1 to 200 (default 25).",
+            "{}",
+            tool.name
+        );
+        assert!(props["cursor"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("next_cursor"));
+        assert_eq!(
+            props["response_format"]["enum"],
+            json!(["concise", "detailed"]),
+            "{}",
+            tool.name
+        );
+    }
+}
+
 // ---- errors -----------------------------------------------------------------
 
 #[test]
@@ -880,7 +1237,13 @@ fn a_missing_session_asks_for_the_browser_login_in_a_terminal() {
     *t.source().fail.lock().unwrap() = Some(CliError::Auth(
         "not logged in — run `m1f auth login --browser`".into(),
     ));
-    for name in [PORTFOLIO_TOOL, ACTIVITY_TOOL, DOCUMENTS_TOOL, GAINS_TOOL] {
+    for name in [
+        PORTFOLIO_TOOL,
+        ACTIVITY_TOOL,
+        DOCUMENTS_TOOL,
+        GAINS_TOOL,
+        TRADING_TOOL,
+    ] {
         let text = err(&call(&t, name, json!({}))).to_string();
         assert!(text.starts_with("auth:"), "{name}: {text}");
         assert!(

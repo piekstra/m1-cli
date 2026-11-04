@@ -1,14 +1,16 @@
-//! `m1f mcp`: M1 net worth, positions, activity, tax documents and realized
-//! gains as MCP tools (cli-common DESIGN.md §1.9, the MCP profile), for
-//! Claude Code, Claude Desktop and any MCP client.
+//! `m1f mcp`: M1 net worth, positions, activity, tax documents, realized gains
+//! and queued trading as MCP tools (cli-common DESIGN.md §1.9, the MCP profile),
+//! for Claude Code, Claude Desktop and any MCP client.
 //!
-//! Four read-only tools over the same GraphQL reads and mappers the commands
+//! Five read-only tools over the same GraphQL reads and mappers the commands
 //! use: `m1_portfolio` (net worth, every account's total, positions),
 //! `m1_activity` (trades, dividends and transfers over a date range),
-//! `m1_documents` (statements and tax forms, listed, never downloaded) and
-//! `m1_realized_gains` (closed lots and their gains by sale date). Nothing
-//! here can write: the client underneath refuses any GraphQL mutation but
-//! the login's own (`graphql::ensure_read_only`).
+//! `m1_documents` (statements and tax forms, listed, never downloaded),
+//! `m1_realized_gains` (closed lots and their gains by sale date) and
+//! `m1_trading` (queued orders, auto-invest, the next trade window, pending
+//! transfers, without ids or who is on the other side of a transfer). Nothing
+//! here can write: a tool sends only the fixed query
+//! documents its command does, and takes no document from its caller.
 //!
 //! Provider access goes through [`Source`], the per-target seam of
 //! cli-common's MCP profile (DESIGN.md §2.3); the tests run every tool
@@ -23,6 +25,7 @@ use std::time::Duration;
 
 use pk_cli_core::{dates, CliError, CommonArgs, Money, RangeArgs};
 use pk_cli_documents::Document;
+use pk_cli_mcp::shape::{ENVELOPE_RESERVE, SIZE_BUDGET};
 use pk_cli_mcp::{
     hold_within, parse_args, ListArgs, Order, Page, PageRequest, PositionKey, PositionRequest,
     Server, ToolDef, ToolError, ToolOutput, Toolset,
@@ -30,10 +33,10 @@ use pk_cli_mcp::{
 use pk_cli_secrets::CredentialStore;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::commands::accounts::{self, AccountRef};
-use crate::commands::{activity, documents, holdings, lots, networth, positions, Ctx};
+use crate::commands::{activity, documents, holdings, lots, networth, positions, trading, Ctx};
 use crate::config::Config;
 use crate::parse;
 
@@ -41,6 +44,7 @@ pub const PORTFOLIO_TOOL: &str = "m1_portfolio";
 pub const ACTIVITY_TOOL: &str = "m1_activity";
 pub const DOCUMENTS_TOOL: &str = "m1_documents";
 pub const GAINS_TOOL: &str = "m1_realized_gains";
+pub const TRADING_TOOL: &str = "m1_trading";
 
 /// How long a call waits for the one before it. Parallel calls from one model turn are normal and
 /// short; past this, the model is better told than left to retry into a queue.
@@ -88,6 +92,8 @@ pub trait Source {
     /// One account's closed lots (`lots::lot_dto`); and whether the page
     /// ceiling stopped the walk.
     async fn closed_lots(&self, account_id: &str) -> Result<(Vec<Value>, bool), CliError>;
+    /// One account's trading node (`trading::account_dto` maps it).
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError>;
 }
 
 /// The live API, through the same [`Ctx`] the commands use.
@@ -194,6 +200,10 @@ impl Source for LiveSource {
 
     async fn closed_lots(&self, account_id: &str) -> Result<(Vec<Value>, bool), CliError> {
         self.with_ctx(|ctx| lots::fetch(ctx, account_id, &["CLOSED"], &RangeArgs::default()))
+    }
+
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError> {
+        self.with_ctx(|ctx| trading::fetch_node(ctx, account_id))
     }
 }
 
@@ -489,7 +499,58 @@ pub struct GainsOut {
     pub page: Page<LotItem>,
 }
 
+// ---- m1_trading -------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TradingArgs {
+    /// Account name.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// One entry per account, built by `trading_entry`. Its fields go undeclared
+/// because declaring them would not fit the 8,000 characters the definitions
+/// share, and `tests/fixtures/mcp/m1_trading.json` pins them instead. The tool
+/// takes no `limit` or `cursor`: `cap_estimates` keeps the result in size.
+/// `truncated` and `hint` carry no doc comments, which would cost that budget too.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TradingOut {
+    pub accounts: Vec<serde_json::Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub hint: Option<String>,
+}
+
+/// The `hint` when estimated rows were cut. It asks for no id, because the tool gives none.
+const TRADING_HINT: &str = "Estimated rows are cut where an account's estimated.truncated is \
+                            true; everything else is whole. `account` narrows to one account, \
+                            which leaves it more rows. For every row, the user runs `m1f accounts \
+                            list` for its id, then `m1f trading --json -a <id>` in a terminal.";
+
 // ---- the toolset ------------------------------------------------------------
+
+/// What `ListArgs` says of its arguments, shortened. Four tools repeat it, and it
+/// is the only text long enough to make room for a fifth tool inside the 8,000
+/// characters all the definitions share.
+const LIST_ARGS: [(&str, &str); 3] = [
+    ("limit", "1 to 200 (default 25)."),
+    ("cursor", "The previous page's `next_cursor`."),
+    (
+        "response_format",
+        "`detailed` adds ids and provider detail.",
+    ),
+];
+
+fn short_list_args(mut tool: ToolDef) -> ToolDef {
+    for (arg, description) in LIST_ARGS {
+        if let Some(schema) = tool.input_schema["properties"].get_mut(arg) {
+            schema["description"] = Value::from(description);
+        }
+    }
+    tool
+}
 
 impl<S: Source> Toolset for M1Tools<S> {
     fn server(&self) -> Server {
@@ -502,13 +563,13 @@ impl<S: Source> Toolset for M1Tools<S> {
     }
 
     fn tools(&self) -> Vec<ToolDef> {
-        vec![
+        let tools = vec![
             ToolDef::read(
                 PORTFOLIO_TOOL,
-                "M1 net worth and positions",
-                "Shows the user's M1 net worth, each account's total and the positions held. \
-                 Use it for what they own at M1 and its value. Returns net_worth, accounts and \
-                 position items. Narrow with account or symbol.",
+                "M1 portfolio",
+                "Shows the user's M1 net worth, account totals and positions. Use it for what \
+                 they own at M1. Returns net_worth, accounts and position items. Narrow with \
+                 account or symbol.",
             )
             .input::<PortfolioArgs>()
             .output::<PortfolioOut>(),
@@ -525,7 +586,7 @@ impl<S: Source> Toolset for M1Tools<S> {
             ToolDef::read(
                 DOCUMENTS_TOOL,
                 "M1 documents",
-                "Lists the user's M1 statements and tax forms, newest first, without \
+                "Lists M1 statements and tax forms, newest first, without \
                  downloading them. Use it to see which 1099s or statements exist. Items carry \
                  date, name and type. Narrow with type (tax-form) or since/until.",
             )
@@ -541,7 +602,18 @@ impl<S: Source> Toolset for M1Tools<S> {
             )
             .input::<GainsArgs>()
             .output::<GainsOut>(),
-        ]
+            ToolDef::read(
+                TRADING_TOOL,
+                "M1 trading",
+                "Shows each account's queued trades and next window. Use it for a pending sale. \
+                 Returns accounts: auto_invest, trading, orders, estimated, cash, \
+                 pending_transfers. Account keys always appear, null means M1 gave no figure, \
+                 amounts are decimal strings. Narrow with account.",
+            )
+            .input::<TradingArgs>()
+            .output::<TradingOut>(),
+        ];
+        tools.into_iter().map(short_list_args).collect()
     }
 
     async fn call(&self, name: &str, args: Value) -> Result<ToolOutput, ToolError> {
@@ -550,6 +622,7 @@ impl<S: Source> Toolset for M1Tools<S> {
             ACTIVITY_TOOL => self.activity(parse_args(args)?).await,
             DOCUMENTS_TOOL => self.documents(parse_args(args)?).await,
             GAINS_TOOL => self.gains(parse_args(args)?).await,
+            TRADING_TOOL => self.trading(parse_args(args)?).await,
             other => Err(ToolError::other(format!("no handler for {other}"))),
         }
     }
@@ -779,6 +852,117 @@ impl<S: Source> M1Tools<S> {
             page: page.page(matched, Order::Descending, "since/until, account or symbol")?,
         })
     }
+
+    async fn trading(&self, args: TradingArgs) -> Result<ToolOutput, ToolError> {
+        let account = non_empty(args.account.as_deref());
+
+        let _turn = self.source.turn().map_err(tool_err)?;
+        let nodes = self.source.accounts().await.map_err(tool_err)?;
+        let all = account_refs(&nodes)?;
+        let mut entries = Vec::new();
+        for acct in pick(&all, account)? {
+            let node = self.source.trading(&acct.id).await.map_err(tool_err)?;
+            entries.push(trading_entry(acct, &node)?);
+        }
+        cap_estimates(&mut entries, SIZE_BUDGET - ENVELOPE_RESERVE);
+        let truncated = entries.iter().any(|e| e["estimated"]["truncated"] == true);
+        let accounts = entries
+            .into_iter()
+            .filter_map(|e| match e {
+                Value::Object(fields) => Some(fields),
+                _ => None,
+            })
+            .collect();
+        ToolOutput::new(&TradingOut {
+            accounts,
+            truncated,
+            hint: truncated.then(|| TRADING_HINT.to_string()),
+        })
+    }
+}
+
+/// One account of `m1_trading`: `m1f trading --json`'s entry with amounts as strings and without
+/// what stays in the terminal. `name` is the label `pick` matches, so it is all `account` needs.
+fn trading_entry(acct: &AccountRef, node: &Value) -> Result<Value, ToolError> {
+    let dto = trading::account_dto(node).map_err(tool_err)?;
+    let mut entry = plain_amounts(dto);
+    if let Some(fields) = entry.as_object_mut() {
+        fields.retain(|key, _| key != "id");
+    }
+    entry["name"] = Value::from(label(acct));
+    if let Some(items) = entry["pending_transfers"]["items"].as_array_mut() {
+        items.iter_mut().for_each(without_the_other_party);
+    }
+    if let Some(estimated) = entry["estimated"].as_object_mut() {
+        let source = &node["estimatedTrading"];
+        estimated.insert("sell_count".into(), source["sells"]["total"].clone());
+        estimated.insert("buy_count".into(), source["buys"]["total"].clone());
+    }
+    Ok(entry)
+}
+
+/// A transfer with no id and nobody's name. `title` goes with the names: M1 writes it as "<from>
+/// to <to>" (`reads/transfers.json`, whose shape was seen live). Each side keeps its `type`, which
+/// is what tells a check apart when `is_check` is false.
+fn without_the_other_party(transfer: &mut Value) {
+    if let Some(fields) = transfer.as_object_mut() {
+        fields.retain(|key, _| key != "id" && key != "title");
+    }
+    for side in ["from", "to"] {
+        if transfer[side].is_object() {
+            transfer[side] = json!({ "type": transfer[side]["type"] });
+        }
+    }
+}
+
+/// Cut estimated rows until `entries` fit in `budget` characters, counted as pk-cli-mcp counts a
+/// page: a row and its comma. Everything else stays whatever its size, so orders and transfers
+/// are never what gets cut. Rows go back one from each side of each account in turn, so one long
+/// estimate cannot crowd out another account's. An account that lost rows says so.
+fn cap_estimates(entries: &mut [Value], budget: usize) {
+    let mut waiting = Vec::new();
+    for (at, entry) in entries.iter_mut().enumerate() {
+        for side in ["sells", "buys"] {
+            let side_rows = entry
+                .get_mut("estimated")
+                .and_then(|estimated| estimated.get_mut(side))
+                .and_then(Value::as_array_mut);
+            if let Some(rows) = side_rows {
+                let rows = std::mem::take(rows);
+                waiting.push((at, side, rows.into_iter().peekable()));
+            }
+        }
+    }
+    let mut room = budget.saturating_sub(serialized_size(entries));
+    let mut placed = true;
+    while placed {
+        placed = false;
+        for (at, side, rows) in &mut waiting {
+            let Some(size) = rows.peek().map(|row| serialized_size(row) + 1) else {
+                continue;
+            };
+            if size > room {
+                continue;
+            }
+            room -= size;
+            placed = true;
+            if let (Some(row), Some(kept)) =
+                (rows.next(), entries[*at]["estimated"][*side].as_array_mut())
+            {
+                kept.push(row);
+            }
+        }
+    }
+    for (at, _, mut rows) in waiting {
+        if rows.peek().is_some() {
+            entries[at]["estimated"]["truncated"] = Value::Bool(true);
+        }
+    }
+}
+
+/// Characters of compact JSON, the measure every limit in pk-cli-mcp uses.
+fn serialized_size<T: Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_string(value).map_or(0, |text| text.chars().count())
 }
 
 /// Where a row belongs in a newest-first list across accounts: its date, then its account and id.
@@ -926,6 +1110,25 @@ fn amount(v: &Value, key: &str) -> Option<String> {
         .and_then(|m| m.get("amount"))
         .and_then(Value::as_str)
         .map(String::from)
+}
+
+/// Every `Money` in a DTO as its decimal string, as every tool returns amounts.
+fn plain_amounts(v: Value) -> Value {
+    match v {
+        Value::Object(fields) => match fields.get("amount").and_then(Value::as_str) {
+            Some(amount) if fields.len() == 2 && fields.contains_key("currency") => {
+                Value::String(amount.to_string())
+            }
+            _ => Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(k, field)| (k, plain_amounts(field)))
+                    .collect(),
+            ),
+        },
+        Value::Array(rows) => Value::Array(rows.into_iter().map(plain_amounts).collect()),
+        other => other,
+    }
 }
 
 fn matches_text(row: &Value, key: &str, wanted: Option<&str>) -> bool {

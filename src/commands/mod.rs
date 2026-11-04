@@ -14,6 +14,7 @@ pub mod networth;
 pub mod positions;
 pub mod status;
 pub mod summary;
+pub mod trading;
 pub mod transactions;
 pub mod transfers;
 

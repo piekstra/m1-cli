@@ -1,0 +1,225 @@
+{
+  "accounts": [
+    {
+      "name": "Fun Money",
+      "account_type": "individual",
+      "registration": "INDIVIDUAL",
+      "is_retirement": false,
+      "status": "OPENED",
+      "is_liquidating": false,
+      "trading_paused": false,
+      "trading_pause": null,
+      "auto_invest": {
+        "on": false,
+        "threshold": null,
+        "trigger_minimum": "25.00"
+      },
+      "trading": {
+        "next_window": "MORNING",
+        "next_time": "2026-01-15T14:30:00.000Z",
+        "in_progress": false,
+        "in_progress_window": null,
+        "has_access_to_next_afternoon_window": true
+      },
+      "orders": {
+        "sells": [],
+        "buys": [],
+        "rebalances": [],
+        "root_order": null,
+        "net_descendant_sell": "0.00",
+        "net_descendant_buy": "0.00",
+        "imminent_cash_flow": null
+      },
+      "estimated": {
+        "has_trades": false,
+        "total_sell": "0.00",
+        "total_buy": "0.00",
+        "last_estimated": null,
+        "sells": [],
+        "buys": [],
+        "truncated": false,
+        "sell_count": 0,
+        "buy_count": 0
+      },
+      "cash": {
+        "available": "50.00",
+        "available_for_withdrawal": "50.00"
+      },
+      "total_value": "2000.00",
+      "pending_transfers": {
+        "has_pending": false,
+        "summary": null,
+        "items": []
+      }
+    },
+    {
+      "name": "Roth IRA",
+      "account_type": "ira_roth",
+      "registration": "ROTH_IRA",
+      "is_retirement": true,
+      "status": "OPENED",
+      "is_liquidating": false,
+      "trading_paused": false,
+      "trading_pause": null,
+      "auto_invest": {
+        "on": true,
+        "threshold": "100.00",
+        "trigger_minimum": "25.00"
+      },
+      "trading": {
+        "next_window": "MORNING",
+        "next_time": "2026-01-15T14:30:00.000Z",
+        "in_progress": false,
+        "in_progress_window": null,
+        "has_access_to_next_afternoon_window": false
+      },
+      "orders": {
+        "sells": [
+          {
+            "name": "Example Total Market Fund",
+            "symbol": "XMPA",
+            "is_root": false,
+            "amount": "-750.50",
+            "value": "1500.25",
+            "locked": false,
+            "lock_reason": "UNLOCKED"
+          },
+          {
+            "name": "Example Growth Pie",
+            "symbol": null,
+            "is_root": false,
+            "amount": "-249.50",
+            "value": "900.00",
+            "locked": true,
+            "lock_reason": "LOCKED_BY_TRADING"
+          }
+        ],
+        "buys": [
+          {
+            "name": "Example Bond Fund",
+            "symbol": "XMPB",
+            "is_root": false,
+            "amount": "200.00",
+            "value": "400.00",
+            "locked": false,
+            "lock_reason": "UNLOCKED"
+          }
+        ],
+        "rebalances": [
+          {
+            "name": "Example Income Pie",
+            "symbol": null,
+            "is_root": false,
+            "amount": null,
+            "value": null,
+            "locked": false,
+            "lock_reason": "UNLOCKED"
+          }
+        ],
+        "root_order": null,
+        "net_descendant_sell": "-1000.00",
+        "net_descendant_buy": "200.00",
+        "imminent_cash_flow": "-1000.00"
+      },
+      "estimated": {
+        "has_trades": true,
+        "total_sell": "1000.00",
+        "total_buy": "200.00",
+        "last_estimated": "2026-01-14T20:00:00.000Z",
+        "sells": [
+          {
+            "symbol": "XMPA",
+            "name": "Example Total Market Fund",
+            "amount": "750.50",
+            "is_buy": false,
+            "pill": null
+          },
+          {
+            "symbol": "XMPC",
+            "name": "Example Value Fund",
+            "amount": "249.50",
+            "is_buy": false,
+            "pill": "Example note"
+          }
+        ],
+        "buys": [
+          {
+            "symbol": "XMPB",
+            "name": "Example Bond Fund",
+            "amount": "200.00",
+            "is_buy": true,
+            "pill": null
+          }
+        ],
+        "truncated": false,
+        "sell_count": 2,
+        "buy_count": 1
+      },
+      "cash": {
+        "available": "12.50",
+        "available_for_withdrawal": "0.00"
+      },
+      "total_value": "5000.25",
+      "pending_transfers": {
+        "has_pending": true,
+        "summary": "1 transfer pending",
+        "items": [
+          {
+            "status": "INITIATED",
+            "description": "Rollover check",
+            "start_date": "2026-01-14",
+            "end_date": null,
+            "amount": "1000.00",
+            "is_liquidation": false,
+            "is_check": true,
+            "depends_on_sells": true,
+            "timing_description": "After the example sale settles",
+            "ira_distribution_reason": "ROLLOVER_TO_QUALIFIED_PLAN",
+            "from": {
+              "type": "INVEST"
+            },
+            "to": {
+              "type": "PHYSICAL_CHECK"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Joint Brokerage",
+      "account_type": "joint",
+      "registration": "JOINT",
+      "is_retirement": false,
+      "status": "OPENED",
+      "is_liquidating": false,
+      "trading_paused": null,
+      "trading_pause": null,
+      "auto_invest": {
+        "on": false,
+        "threshold": null,
+        "trigger_minimum": "25.00"
+      },
+      "trading": null,
+      "orders": {
+        "sells": null,
+        "buys": null,
+        "rebalances": null,
+        "root_order": null,
+        "net_descendant_sell": null,
+        "net_descendant_buy": null,
+        "imminent_cash_flow": null
+      },
+      "estimated": null,
+      "cash": {
+        "available": null,
+        "available_for_withdrawal": null
+      },
+      "total_value": null,
+      "pending_transfers": {
+        "has_pending": null,
+        "summary": null,
+        "items": null
+      }
+    }
+  ]
+}

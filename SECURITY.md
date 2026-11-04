@@ -67,7 +67,13 @@ with `--http` (below). It uses the
 session already in the keychain, exactly as the commands do, refreshing it
 in place, and never signs in: a missing or lapsed session is an error asking
 the user to run `m1f auth login --browser --overwrite` in a terminal. No tool downloads
-a document or emits a document's raw id or link. The Claude Desktop
+a document or emits a document's raw id or link. `m1_trading` sends no account
+or transfer id, and of a transfer's parties only each side's type (such as
+`PHYSICAL_CHECK`); it leaves out `title`, which M1 writes as "<from> to <to>".
+`m1f trading --json` keeps all of these, because it stays on this computer. M1's
+other wording about a transfer (`description`, `timing_description`,
+`pending_transfers.summary`) passes through as sent. Its wording has not been
+observed on a real account, so it could name the other side. The Claude Desktop
 extension (`.mcpb`) takes no settings and so holds no credential of its
 own; on macOS its bundled binary needs the user's approval, once, to read
 the `piekstra.m1f` keychain item.
@@ -81,13 +87,13 @@ no flag for another address, and refuses to start without a bearer token of
 256 random bits and replaces only with `--overwrite`. Every request must
 carry the token (compared in constant time) and a `Host` of `127.0.0.1` or
 `localhost`, and must not carry an `Origin`; there are no CORS headers. Only
-the read-only tools are served (all four are). The session stays in the
+the read-only tools are served (all five are). The session stays in the
 keychain: the Worker sends tool calls and receives results, and never sees
 a cookie or a token for M1.
 
 **Tool results leave your computer on this path.** They hold your financial
-data (balances, positions, activity, realized gains, the list of your tax
-documents). They cross Cloudflare, through your tunnel and your Worker, and
+data (balances, positions, activity, realized gains, queued orders, pending
+transfers, the list of your tax documents). They cross Cloudflare, through your tunnel and your Worker, and
 reach Claude, which shows them in your conversation. Who holds what, and what
 a leaked token can do, is in the connector's
 [threat model](https://github.com/piekstra/cli-common/blob/main/connector/README.md#threat-model).

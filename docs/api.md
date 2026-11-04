@@ -447,6 +447,8 @@ the owner's to run.
 | `CreateAccountDocumentLink` | `documents download` | Mints a link for the **ACCOUNT_DOCUMENT** class only; `accountDocumentId` (not `documentId`) takes the raw blob. **Refuses invest docs** ("Unexpected ID type, expected: AccountDocument. Received: InvestAccountDocument"), which is fine — invest docs carry their own embedded URL. Changes no account state. |
 | `AccountTaxLots` | `lots list` | Per-lot cost basis — see below. |
 | `AccountSummary` | `summary` | Per-account rollup under `balance`: `totalValue`, `cash.available`, and the figures nothing else surfaces — `investments.totalCost.cost`, `.totalValue.value`, `.totalUnrealizedGain { gain gainPercent }` — plus `fundingTotals.totalsByYear { totalDeposits totalWithdrawals }`. All `Float`; `hasValue: false` figures are omitted. Live-verified 2026-08-18. |
+| `AccountTrading` | `trading`, `m1_trading` | **Schema-verified, not exercised live.** What is queued in one account and when it trades. See "Trading status" below. |
+| `AccountEstimatedTrades` | `trading`, `m1_trading` | **Schema-verified, not exercised live.** The later pages of `estimatedTrading.sells` and `.buys`, one side at a time. |
 | `IraContributions` | `ira` | `Account.iraContributionTotals.totalsByYear` (`[{ year, totalContribution, maxContribution }]`, Floats) + `iraContributionLimits.currentYearLimit`. The command computes remaining room per year in **integer cents** (never float money math), clamped at zero. These fields exist on every account, so `ira` reads `registration` and reports a non-IRA account as such. Live-verified 2026-08-18. |
 
 ### Activity is a 7-member interface
@@ -576,6 +578,51 @@ disallowedWashSaleAmount`. Note `washSaleIndicator` (not the guessed
 with exactly two members, `OPEN` and `CLOSED`, so `lots list` queries both and
 merges (or one, with `--open`/`--closed`).
 
+### Trading status (schema-verified, not exercised live)
+
+`AccountTrading` reads `node(id:) { ... on Account }`. Every field, type and
+enum member comes from introspection on 2026-11-04. Both documents validate
+against that schema, and all three `reads/trading*.json` fixtures run through
+`AccountTrading` against it with no error. No request has been sent with a
+session.
+
+**Auto-invest on means `maxCashThreshold` is non-null. This is inferred from the
+schema's description ("When null, the max cash threshold is disabled") and is
+not yet confirmed on a real account.** A threshold of 0 is on, because the
+description allows zero. `autoInvestTriggerMinimum` is `Int!`, so it has a value
+whether auto-invest is on or off.
+
+`account-trading/v1` keeps every key and writes `null` for a figure M1 did not
+give, where the family spec would omit it. `[]` means nothing is queued and
+`null` means M1 gave no list. A selected top-level field that is missing from the
+response is exit 5, so a renamed `maxCashThreshold` cannot read as off.
+
+| Field | What the schema says, and what the command does |
+| --- | --- |
+| `PortfolioSlice.to` | The `Sliceable` interface: `name`, no `symbol`. `Security` has a `symbol`, and so does `MutualFund`, which is not a `Security`, so the query needs both fragments. A pie has no symbol. |
+| `order.cashFlow` | Signed: positive is a buy, negative a sell, never zero. It is the row's `amount`. A rebalance has no order, so its `amount` is null. |
+| `netDescendantSellOrderAmount`, `netDescendantBuyOrderAmount` | Leave out an order set on the slice itself. `orders.root_order` reads the root's own `order.cashFlow`, so a sale set on the whole portfolio is not lost. |
+| `orderStatus`, `rebalanceStatus` | A sell or buy row reads its lock from `orderStatus`, a rebalance row from `rebalanceStatus`. A slice with a rebalance can show its `orderStatus` as `LOCKED_BY_REBALANCE`. |
+| `isLocked` | Both status types say "If and only if the value is true, the `lockReason` will be `UNLOCKED`", which reverses the sentence before it. Both fields are emitted as sent. |
+| `estimatedTrading` | Null when the feature is unavailable or disabled. It returns the most recently generated estimate, which can be old; `last_estimated` says when. `refreshEstimatedTrading` is a mutation and is never called. |
+| `EstimatedTradeAmount.amount`, `totalSellAmount`, `totalBuyAmount` | No sign is documented. They are emitted as sent, and `is_buy` carries the direction. Later pages are followed with `first: 100`, at most 20 pages; `estimated.truncated` is true when M1's `total` exceeds the rows held. |
+| `TransferInstance.isCheck` | "True when the transfer is a sent check from Spend Checking", so a check out of an IRA may read false. `to.type` of `PHYSICAL_CHECK` is the other signal, which is why `from` and `to` are in the DTO. |
+| `TransferInstance.amount` | Null when the exact amount is not yet known. |
+| `TransferInstance.id` | The same `TransferInstance:{"transferId":…}` blob as `TransfersHistory`. Only the inner id is emitted. |
+| `totalValue.hasValue` | "True if the value is greater than zero". `total_value` is null when it is false, as in `accounts list`, so an emptied account shows null rather than 0. |
+| `TransferInstance.title` | `TransfersHistory` shows the form "<from> to <to>", so it repeats both parties' names. `m1f trading` keeps it; `m1_trading` does not. |
+| `nextTradingTime`, `lastEstimatedTime` | Kept at full precision, because the time of day is the point of them. `start_date` and `end_date` are dates. |
+
+`m1_trading` returns the same entry with four differences, and
+`tests/fixtures/mcp/m1_trading.json` pins them:
+
+| Difference | Why |
+| --- | --- |
+| Amounts are decimal strings | As every tool returns them. |
+| No account or transfer `id`, no transfer `title`, and `from` and `to` hold only `type` | Tool results can leave this computer (SECURITY.md). `account` takes the name, so no id is needed, and `to.type` still tells a check apart. |
+| `name` is the label the `account` argument matches | It comes from the account read, so a returned name always finds its account. |
+| `estimated.sell_count` and `buy_count`, M1's `total` for each side | They survive a cut. Estimated rows are the only thing cut: up to `SIZE_BUDGET` less `ENVELOPE_RESERVE`, one row from each side of each account in turn. `estimated.truncated` marks an account that lost rows, and top-level `truncated` and `hint` state it. |
+
 ### Pagination
 
 Every connection carries `pageInfo { hasNextPage endCursor }`. `accounts`,
@@ -636,6 +683,15 @@ Short, and none of it blocks the tool:
 | Auth0 token lifetime and rotation | The access token's lifetime and whether the tenant rotates refresh tokens are unobserved; `m1f` keeps a rotated token when one comes back and the old one when none does. |
 | Auth0 refresh outside a browser | The token endpoint advertises `none` auth for public clients; whether Cloudflare or Auth0's origin rules let a non-browser renewal through is unobserved. A refusal is exit 3 naming the recapture; an HTML answer exit 5. |
 | Net worth by account | Whether the accounts sum to M1's Invest figure to the cent is unobserved; a difference becomes its own row, and so does a `0.00` remainder beside an unpriced account. |
+| `AccountTrading` live | Validated against the schema only. No request has been sent with a session, so `m1f trading` and `m1_trading` have never read a real account. |
+| Auto-invest on | `on` = `maxCashThreshold` non-null is inferred from the schema's description, not confirmed on a real account. |
+| `isLocked` direction | The schema's description contradicts itself. The fixtures pair `isLocked: false` with `UNLOCKED`, the reading of its first sentence. |
+| A sale set on the root slice | Whether `portfolioSlicesWithSellOrders` lists the root is unobserved. `orders.root_order` shows it either way. |
+| Sign of estimates and transfers | Whether an estimated sell's `amount`, `totalSellAmount` and a pending transfer's `amount` are negative is not documented. The fixtures use positive values. |
+| Names in M1's other transfer wording | Whether `description`, `timing_description` and `pendingTransferInstanceSummary` can name the other party is unobserved. `m1_trading` passes them as sent. |
+| `isCheck` on an IRA check | The description names Spend Checking only. What a rollover check from an IRA reads is unobserved. |
+| Trading strings at runtime | The format of `nextTradingTime`, `lastEstimatedTime` and `pendingTransferInstanceSummary`, all `String`, is unobserved. A string passes through as sent. |
+| `first` on estimated trades | The largest page M1 accepts on `sells` and `buys` is unobserved. The command asks for 100. |
 | `code` (TOTP) vs `emailCode` | Only the email-MFA path (`EMAIL_AMFA_REQUIRED` → `emailCode`) was exercised live. |
 
 ---

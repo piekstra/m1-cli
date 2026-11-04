@@ -1,0 +1,154 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000002",
+      "name": "Roth IRA",
+      "nickname": "Roth IRA",
+      "registration": "ROTH_IRA",
+      "isRetirement": true,
+      "status": "OPENED",
+      "isLiquidating": false,
+      "isTradingPaused": false,
+      "tradingPause": null,
+      "maxCashThreshold": 100,
+      "autoInvestTriggerMinimum": 25,
+      "trading": {
+        "isInProgress": false,
+        "inProgressWindowForAccount": null,
+        "nextTradingTime": "2026-01-15T14:30:00.000Z",
+        "nextWindowForAccount": "MORNING",
+        "hasAccessToNextAfternoonWindow": false
+      },
+      "portfolioSlicesWithSellOrders": [
+        {
+          "isRootSlice": false,
+          "to": { "name": "Example Total Market Fund", "symbol": "XMPA" },
+          "value": { "total": 1500.25 },
+          "orderStatus": {
+            "isLocked": false,
+            "lockReason": "UNLOCKED",
+            "order": { "cashFlow": -750.5 }
+          },
+          "rebalanceStatus": { "isLocked": true, "lockReason": "LOCKED_BY_ORDER" }
+        },
+        {
+          "isRootSlice": false,
+          "to": { "name": "Example Growth Pie" },
+          "value": { "total": 900.0 },
+          "orderStatus": {
+            "isLocked": true,
+            "lockReason": "LOCKED_BY_TRADING",
+            "order": { "cashFlow": -249.5 }
+          },
+          "rebalanceStatus": { "isLocked": true, "lockReason": "LOCKED_BY_TRADING" }
+        }
+      ],
+      "portfolioSlicesWithBuyOrders": [
+        {
+          "isRootSlice": false,
+          "to": { "name": "Example Bond Fund", "symbol": "XMPB" },
+          "value": { "total": 400.0 },
+          "orderStatus": {
+            "isLocked": false,
+            "lockReason": "UNLOCKED",
+            "order": { "cashFlow": 200.0 }
+          },
+          "rebalanceStatus": { "isLocked": true, "lockReason": "LOCKED_BY_ORDER" }
+        }
+      ],
+      "portfolioSlicesWithRebalances": [
+        {
+          "isRootSlice": false,
+          "to": { "name": "Example Income Pie" },
+          "value": { "total": null },
+          "orderStatus": {
+            "isLocked": true,
+            "lockReason": "LOCKED_BY_REBALANCE",
+            "order": null
+          },
+          "rebalanceStatus": { "isLocked": false, "lockReason": "UNLOCKED" }
+        }
+      ],
+      "rootPortfolioSlice": {
+        "orderStatus": {
+          "netDescendantSellOrderAmount": -1000.0,
+          "netDescendantBuyOrderAmount": 200.0,
+          "order": null
+        }
+      },
+      "imminentPendingCashFlowForOrders": -1000.0,
+      "estimatedTrading": {
+        "hasTrades": true,
+        "totalSellAmount": 1000.0,
+        "totalBuyAmount": 200.0,
+        "lastEstimatedTime": "2026-01-14T20:00:00.000Z",
+        "sells": {
+          "total": 2,
+          "pageInfo": { "hasNextPage": false, "endCursor": "DUMMYCURSOR041" },
+          "edges": [
+            {
+              "node": {
+                "amount": 750.5,
+                "isBuy": false,
+                "of": { "symbol": "XMPA", "name": "Example Total Market Fund" },
+                "pill": null
+              }
+            },
+            {
+              "node": {
+                "amount": 249.5,
+                "isBuy": false,
+                "of": { "symbol": "XMPC", "name": "Example Value Fund" },
+                "pill": { "label": "Example note" }
+              }
+            }
+          ]
+        },
+        "buys": {
+          "total": 1,
+          "pageInfo": { "hasNextPage": false, "endCursor": "DUMMYCURSOR042" },
+          "edges": [
+            {
+              "node": {
+                "amount": 200.0,
+                "isBuy": true,
+                "of": { "symbol": "XMPB", "name": "Example Bond Fund" },
+                "pill": null
+              }
+            }
+          ]
+        }
+      },
+      "balance": {
+        "totalValue": { "value": 5000.25, "hasValue": true },
+        "cash": { "available": 12.5, "availableForWithdrawal": 0.0 }
+      },
+      "hasPendingTransferInstances": true,
+      "pendingTransferInstanceSummary": "1 transfer pending",
+      "pendingTransferInstances": [
+        {
+          "id": "act-000000020",
+          "status": { "code": "INITIATED" },
+          "title": "Roth IRA to Example Custodian",
+          "description": "Rollover check",
+          "startDate": "2026-01-14T15:00:00.000Z",
+          "endDate": null,
+          "amount": 1000.0,
+          "isLiquidation": false,
+          "isCheck": true,
+          "dependsOnSells": true,
+          "timingDescription": "After the example sale settles",
+          "iraDistributionReason": "ROLLOVER_TO_QUALIFIED_PLAN",
+          "from": {
+            "transferParticipantType": "INVEST",
+            "transferParticipantName": "Roth IRA"
+          },
+          "to": {
+            "transferParticipantType": "PHYSICAL_CHECK",
+            "transferParticipantName": "Example Custodian"
+          }
+        }
+      ]
+    }
+  }
+}

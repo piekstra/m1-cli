@@ -153,6 +153,8 @@ m1f transactions list --since 2026-01-01 --limit 50
 
 m1f net-worth                              # household total; the Invest line one row per account
 m1f summary                                # per-account snapshot: value, cost, gain %, funding
+m1f trading                                # queued orders, auto-invest, next window, pending transfers
+m1f trading -a <ROTH_IRA_ID>               # just that account
 m1f ira -a <ROTH_IRA_ID>                   # IRA contribution room by year (tax)
 m1f transfers list                         # money movements: deposits/withdrawals
 m1f transfers list --since 2026-01-01
@@ -205,7 +207,7 @@ m1f holdings list --json | jq '.items[] | {symbol, value: .value.amount}'
 
 ## Use with Claude
 
-`m1f mcp` serves four read-only tools over MCP, so Claude can answer
+`m1f mcp` serves five read-only tools over MCP, so Claude can answer
 questions about your own M1 accounts. There is no hosted service: the tools
 run on your computer, in your copy of `m1f`, and call M1's backend directly
 with the session `m1f auth login --browser` stored in your OS keychain.
@@ -216,10 +218,16 @@ with the session `m1f auth login --browser` stored in your OS keychain.
 | `m1_activity` | What happened over a period? Trades, deposits, withdrawals and dividends by `since`/`until` dates (year to date by default), `account`, `type` (`Trade`, `Cash`, `Position`) and `symbol` |
 | `m1_documents` | Which statements and tax forms exist? Listed by `type` (`tax-form` for 1099s) and `since`/`until`; never downloaded (`m1f documents download` does that) |
 | `m1_realized_gains` | What did I realize this year? Closed lots by sale date, with exact short-term, long-term and wash-sale totals; taxable accounts unless `account` names an IRA |
+| `m1_trading` | Is a sale queued, and when does it trade? Each account's queued orders, rebalances and estimated trades, auto-invest, the next window, cash available for withdrawal and pending transfers, narrowed by `account` (its name); a figure M1 did not give is null. It leaves out ids and who is on the other side of a transfer: each side keeps its type, such as `PHYSICAL_CHECK` |
 
 Results are concise by default (`response_format: "detailed"` adds ids and
 provider detail), 25 records a page with a cursor for more, and never larger
-than about 32,000 characters. Accounts are named, not numbered. Descriptions
+than about 32,000 characters. `m1_trading` returns one entry per account
+instead of pages. At that size it cuts estimated rows and keeps each account's
+orders, pending transfers, estimated totals and row counts, then sets `truncated`
+and a `hint` pointing to `m1f trading --json` in a terminal, which lists the rows.
+Orders and transfers are never cut, so they alone can pass 32,000 characters; past
+64,000 the call fails and asks you to narrow it. Accounts are named, not numbered. Descriptions
 come from M1 and other parties; the server tells Claude to treat them as
 data, not instructions.
 

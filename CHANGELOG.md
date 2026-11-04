@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.7.0 — 2026-11-04
+
+Adds `m1f trading` and the `m1_trading` tool. Both are verified against M1's schema and have not
+yet run against a live account.
+
+- `m1f trading` (`account-trading/v1`) shows each account's queued sell orders, buy orders and
+  rebalances, its estimated trades, the auto-invest setting, the next trade window, cash available
+  for withdrawal, total value and pending transfers. A figure M1 did not give is null, never 0, and
+  an empty list means nothing is queued. It covers the selected account, or every account when none
+  is selected, as `holdings list` does.
+- Auto-invest reads as on when `maxCashThreshold` is non-null. That comes from the schema's
+  description and is not yet confirmed on a real account.
+- `m1f mcp` serves five read-only tools. `m1_trading` returns the same data with amounts as decimal
+  strings, without account or transfer ids, without a transfer's `title`, and with only the `type`
+  of each side of a transfer. Over 32,000 characters it cuts estimated rows, keeps each account's
+  orders, transfers, totals and row counts, and sets `truncated` and a `hint`.
+- All five definitions fit in 8,000 characters through shorter text on the list tools' `limit`,
+  `cursor` and `response_format`, a shorter `m1_portfolio` title and description, and a shorter
+  `m1_documents` description.
+
 ## v0.6.1 — 2026-11-03
 
 Moves to cli-common v0.27.0.

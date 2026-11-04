@@ -11,11 +11,12 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-const TOOLS: [&str; 4] = [
+const TOOLS: [&str; 5] = [
     "m1_portfolio",
     "m1_activity",
     "m1_documents",
     "m1_realized_gains",
+    "m1_trading",
 ];
 
 /// A config path that does not exist, so a test never reads the developer's

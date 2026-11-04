@@ -92,6 +92,16 @@ fn all_fixtures() -> Vec<(&'static str, Value)> {
         ),
         ("reads/ira.json", fixture("reads/ira.json")),
         ("reads/summary.json", fixture("reads/summary.json")),
+        ("reads/trading.json", fixture("reads/trading.json")),
+        (
+            "reads/trading-idle.json",
+            fixture("reads/trading-idle.json"),
+        ),
+        (
+            "reads/trading-unavailable.json",
+            fixture("reads/trading-unavailable.json"),
+        ),
+        ("mcp/m1_trading.json", fixture("mcp/m1_trading.json")),
     ]
 }
 
@@ -682,6 +692,123 @@ fn accounts_carry_what_the_net_worth_split_reads() {
         assert!(total["value"].is_number(), "{n}");
         assert!(total["hasValue"].is_boolean(), "{n}");
     }
+}
+
+/// `m1f trading` reads a slice's name under `to`, its signed amount under
+/// `orderStatus.order`, and a rebalance's lock under `rebalanceStatus`. A rename of
+/// any of them would blank a column of what is queued.
+#[test]
+fn trading_carries_the_slice_fields_the_orders_table_reads() {
+    let f = fixture("reads/trading.json");
+    let n = &f["data"]["node"];
+    let sells = n["portfolioSlicesWithSellOrders"].as_array().unwrap();
+    assert!(!sells.is_empty());
+    for s in sells
+        .iter()
+        .chain(n["portfolioSlicesWithBuyOrders"].as_array().unwrap())
+    {
+        assert!(s["to"]["name"].is_string(), "{s}");
+        assert!(s["orderStatus"]["isLocked"].is_boolean(), "{s}");
+        assert!(s["orderStatus"]["lockReason"].is_string(), "{s}");
+        assert!(s["orderStatus"]["order"]["cashFlow"].is_number(), "{s}");
+        assert!(s["value"]["total"].is_number(), "{s}");
+    }
+    // M1 documents a sell's cash flow as negative and a buy's as positive.
+    assert!(
+        sells[0]["orderStatus"]["order"]["cashFlow"]
+            .as_f64()
+            .unwrap()
+            < 0.0
+    );
+    let buy = &n["portfolioSlicesWithBuyOrders"][0];
+    assert!(buy["orderStatus"]["order"]["cashFlow"].as_f64().unwrap() > 0.0);
+    // A security has a symbol; a pie has only a name.
+    assert!(sells[0]["to"]["symbol"].is_string());
+    assert!(sells[1]["to"].get("symbol").is_none());
+    let rebalance = &n["portfolioSlicesWithRebalances"][0];
+    assert!(rebalance["rebalanceStatus"]["isLocked"].is_boolean());
+    assert!(rebalance["rebalanceStatus"]["lockReason"].is_string());
+}
+
+/// The rest of the head and the pending-transfers table.
+#[test]
+fn trading_carries_the_head_and_transfer_fields() {
+    let f = fixture("reads/trading.json");
+    let n = &f["data"]["node"];
+    assert!(n["isRetirement"].is_boolean());
+    assert!(n["isLiquidating"].is_boolean());
+    assert!(n["isTradingPaused"].is_boolean());
+    assert!(n["maxCashThreshold"].is_number());
+    assert!(n["autoInvestTriggerMinimum"].is_number());
+
+    let t = &n["trading"];
+    assert!(t["isInProgress"].is_boolean());
+    assert!(t["nextTradingTime"].is_string());
+    assert!(t["nextWindowForAccount"].is_string());
+    assert!(t["hasAccessToNextAfternoonWindow"].is_boolean());
+
+    let root = &n["rootPortfolioSlice"]["orderStatus"];
+    assert!(root["netDescendantSellOrderAmount"].is_number());
+    assert!(root["netDescendantBuyOrderAmount"].is_number());
+    assert!(root.get("order").is_some());
+    assert!(n["imminentPendingCashFlowForOrders"].is_number());
+
+    let est = &n["estimatedTrading"];
+    assert!(est["hasTrades"].is_boolean());
+    assert!(est["totalSellAmount"].is_number());
+    assert!(est["totalBuyAmount"].is_number());
+    assert!(est["lastEstimatedTime"].is_string());
+    for side in ["sells", "buys"] {
+        let conn = &est[side];
+        assert!(conn["total"].is_number(), "{side}");
+        assert!(conn["pageInfo"]["hasNextPage"].is_boolean(), "{side}");
+        for e in conn["edges"].as_array().unwrap() {
+            let row = &e["node"];
+            assert!(row["amount"].is_number(), "{row}");
+            assert!(row["isBuy"].is_boolean(), "{row}");
+            assert!(row["of"]["symbol"].is_string(), "{row}");
+            assert!(row["of"]["name"].is_string(), "{row}");
+            assert!(row.get("pill").is_some(), "{row}");
+        }
+    }
+
+    assert!(n["balance"]["totalValue"]["value"].is_number());
+    assert!(n["balance"]["cash"]["available"].is_number());
+    assert!(n["balance"]["cash"]["availableForWithdrawal"].is_number());
+
+    assert!(n["hasPendingTransferInstances"].is_boolean());
+    assert!(n["pendingTransferInstanceSummary"].is_string());
+    let check = &n["pendingTransferInstances"][0];
+    assert!(check["id"].is_string());
+    assert!(check["status"]["code"].is_string());
+    assert!(check["title"].is_string());
+    assert!(check["startDate"].is_string());
+    assert!(check.get("endDate").is_some());
+    assert!(check["amount"].is_number());
+    assert_eq!(check["isCheck"], true);
+    assert!(check["dependsOnSells"].is_boolean());
+    assert!(check["timingDescription"].is_string());
+    assert!(check["iraDistributionReason"].is_string());
+    assert!(check["to"]["transferParticipantType"].is_string());
+    assert!(check["to"]["transferParticipantName"].is_string());
+}
+
+/// The cases the DTO must not flatten: no orders is an empty list and auto-invest
+/// off is a null threshold, and a list M1 did not give is null, not empty.
+#[test]
+fn trading_fixtures_tell_nothing_queued_from_nothing_given() {
+    let idle = fixture("reads/trading-idle.json");
+    let n = &idle["data"]["node"];
+    assert_eq!(n["portfolioSlicesWithSellOrders"], serde_json::json!([]));
+    assert_eq!(n["pendingTransferInstances"], serde_json::json!([]));
+    assert!(n["maxCashThreshold"].is_null());
+
+    let none = fixture("reads/trading-unavailable.json");
+    let n = &none["data"]["node"];
+    assert!(n["portfolioSlicesWithSellOrders"].is_null());
+    assert!(n["pendingTransferInstances"].is_null());
+    assert!(n["estimatedTrading"].is_null());
+    assert!(n["balance"]["cash"].is_null());
 }
 
 /// The browser-session login reads auth0-spa-js's cache entry: the token

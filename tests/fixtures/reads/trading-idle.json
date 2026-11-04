@@ -1,0 +1,58 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000001",
+      "name": "Individual Brokerage",
+      "nickname": "Fun Money",
+      "registration": "INDIVIDUAL",
+      "isRetirement": false,
+      "status": "OPENED",
+      "isLiquidating": false,
+      "isTradingPaused": false,
+      "tradingPause": null,
+      "maxCashThreshold": null,
+      "autoInvestTriggerMinimum": 25,
+      "trading": {
+        "isInProgress": false,
+        "inProgressWindowForAccount": null,
+        "nextTradingTime": "2026-01-15T14:30:00.000Z",
+        "nextWindowForAccount": "MORNING",
+        "hasAccessToNextAfternoonWindow": true
+      },
+      "portfolioSlicesWithSellOrders": [],
+      "portfolioSlicesWithBuyOrders": [],
+      "portfolioSlicesWithRebalances": [],
+      "rootPortfolioSlice": {
+        "orderStatus": {
+          "netDescendantSellOrderAmount": 0.0,
+          "netDescendantBuyOrderAmount": 0.0,
+          "order": null
+        }
+      },
+      "imminentPendingCashFlowForOrders": null,
+      "estimatedTrading": {
+        "hasTrades": false,
+        "totalSellAmount": 0.0,
+        "totalBuyAmount": 0.0,
+        "lastEstimatedTime": null,
+        "sells": {
+          "total": 0,
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "edges": []
+        },
+        "buys": {
+          "total": 0,
+          "pageInfo": { "hasNextPage": false, "endCursor": null },
+          "edges": []
+        }
+      },
+      "balance": {
+        "totalValue": { "value": 2000.0, "hasValue": true },
+        "cash": { "available": 50.0, "availableForWithdrawal": 50.0 }
+      },
+      "hasPendingTransferInstances": false,
+      "pendingTransferInstanceSummary": null,
+      "pendingTransferInstances": []
+    }
+  }
+}
