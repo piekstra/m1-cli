@@ -839,11 +839,15 @@ fn run_logout(
         steps.failed("a half-finished login", e);
     }
     let redirected = keychain_redirected(creds);
+    let mut token_answered = false;
     if forgot && !redirected {
         steps.step("the config identity", identity());
         // Nothing records whether `mcp --new-token` ran, so this delete is ungated.
         match connector_token() {
-            Ok(removed) => steps.token_removed = removed,
+            Ok(removed) => {
+                steps.token_removed = removed;
+                token_answered = true;
+            }
             Err(e) => steps.failed("the connector token", e),
         }
     }
@@ -881,8 +885,8 @@ fn run_logout(
             } else {
                 ""
             },
-            if token_removed {
-                format!("\n{}", pk_cli_mcp::stop_note(crate::BIN))
+            if token_answered {
+                format!("\n{}", pk_cli_mcp::forget_note(crate::BIN, token_removed))
             } else {
                 String::new()
             }
@@ -2309,6 +2313,23 @@ mod tests {
         .unwrap();
         assert!(line.contains("connector token removed"), "{line}");
         assert!(line.contains("keeps accepting the token"), "{line}");
+    }
+
+    /// A server on the variable never had an item to remove.
+    #[test]
+    fn a_forget_with_no_token_item_still_speaks_to_a_server_on_the_variable() {
+        let line = run_logout(
+            &real_store(),
+            true,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(false),
+            || Ok(false),
+        )
+        .unwrap();
+        assert!(!line.contains("connector token removed"), "{line}");
+        assert!(line.contains("$M1F_MCP_TOKEN"), "{line}");
     }
 
     /// The retry finds no item, so the partial failure is the only run that can say this.

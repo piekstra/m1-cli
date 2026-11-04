@@ -1334,7 +1334,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "m1-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1575,8 +1575,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-auth"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1587,8 +1587,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-browser"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1601,8 +1601,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-config"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1611,8 +1611,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-core"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "libc",
@@ -1623,8 +1623,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-documents"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1633,8 +1633,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-http"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1644,8 +1644,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-mcp"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "bytes",
  "clap",
@@ -1665,8 +1665,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-secrets"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "keyring",
@@ -1679,8 +1679,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-selfupdate"
-version = "0.27.0"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.27.0#40cee7a5332184348d9292c21b0ef582a3f1d292"
+version = "0.29.0"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.29.0#0aa4887ae7313ae258a3283986b82d1bd4518a7b"
 dependencies = [
  "clap",
  "flate2",
