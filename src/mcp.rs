@@ -18,7 +18,7 @@
 //! signs in itself: a missing or dead session is an auth error naming that
 //! command.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use pk_cli_core::{dates, CliError, CommonArgs, Money, RangeArgs};
@@ -63,6 +63,11 @@ const AFTER_A_BLOCK: &str = "Wait or try another network, then call the tool aga
 /// Where the tools get M1's data: the live GraphQL API, or fixtures.
 #[allow(async_fn_in_trait)] // deliberate: no `Send` bound, as in `Toolset`
 pub trait Source {
+    /// One tool call's turn, held for the whole call: a call reads once per account, and the
+    /// wait in the queue has to be spent once to leave room to answer inside the call's limit.
+    fn turn(&self) -> Result<Option<MutexGuard<'_, ()>>, CliError> {
+        Ok(None)
+    }
     /// Every account node on the login (`viewer.accounts`).
     async fn accounts(&self) -> Result<Vec<Value>, CliError>;
     /// M1's net-worth rollup (`viewer.overview.balances`).
@@ -109,18 +114,10 @@ impl LiveSource {
         }
     }
 
-    /// Run `f` with a context, one read at a time. A lapsed access token is
-    /// refreshed inside `Ctx::read`, under a lock that also holds off every
-    /// other `m1f` process, because the refresh rotates the stored refresh
-    /// token and Auth0 can revoke the whole session when one is reused.
+    /// Run `f` with a context. A lapsed access token is refreshed inside `Ctx::read`, under a
+    /// lock that also holds off every other `m1f` process, because the refresh rotates the stored
+    /// refresh token and Auth0 can revoke the whole session when one is reused.
     fn with_ctx<T>(&self, f: impl FnOnce(&Ctx) -> Result<T, CliError>) -> Result<T, CliError> {
-        let _one = hold_within(&self.one_at_a_time, QUEUE_WAIT).ok_or_else(|| {
-            CliError::Upstream(
-                "another call to M1 is still running in this server, and may be waiting on a \
-                 keychain prompt on this computer; ask the user to check for one, then try again"
-                    .into(),
-            )
-        })?;
         f(&Ctx {
             common: &self.common,
             cfg: &self.cfg,
@@ -130,10 +127,25 @@ impl LiveSource {
     }
 }
 
+/// A call's turn at M1, or the error that says another call still has it.
+fn turn_within(lock: &Mutex<()>, wait: Duration) -> Result<MutexGuard<'_, ()>, CliError> {
+    hold_within(lock, wait).ok_or_else(|| {
+        CliError::Upstream(
+            "another call to M1 is still running in this server, and may be waiting on a keychain \
+             prompt on this computer; ask the user to check for one, then try again"
+                .into(),
+        )
+    })
+}
+
 /// Blocking inside `async fn` is deliberate: the stdio server polls each call
 /// on its own blocking thread with no Tokio reactor (pk-cli-mcp's `Toolset`
 /// contract), which is where `reqwest::blocking` belongs.
 impl Source for LiveSource {
+    fn turn(&self) -> Result<Option<MutexGuard<'_, ()>>, CliError> {
+        turn_within(&self.one_at_a_time, QUEUE_WAIT).map(Some)
+    }
+
     async fn accounts(&self) -> Result<Vec<Value>, CliError> {
         self.with_ctx(accounts::fetch_nodes)
     }
@@ -550,6 +562,7 @@ impl<S: Source> M1Tools<S> {
         let page = PageRequest::new(&args.list, &PortfolioFilter { account, symbol })?;
         let detailed = args.list.format().is_detailed();
 
+        let _turn = self.source.turn().map_err(tool_err)?;
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;
         let scope = pick(&all, account)?;
@@ -595,6 +608,7 @@ impl<S: Source> M1Tools<S> {
         )?;
         let detailed = args.list.format().is_detailed();
 
+        let _turn = self.source.turn().map_err(tool_err)?;
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;
         let mut complete = true;
@@ -704,6 +718,8 @@ impl<S: Source> M1Tools<S> {
         )?;
         let detailed = args.list.format().is_detailed();
 
+        let _turn = self.source.turn().map_err(tool_err)?;
+        let _turn = self.source.turn().map_err(tool_err)?;
         let nodes = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&nodes)?;
         // A sale inside an IRA is not a taxable event; those lots come only

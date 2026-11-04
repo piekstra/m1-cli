@@ -146,9 +146,20 @@ impl M1Client {
         })
     }
 
-    /// Unauthenticated client, for the login mutation itself.
+    /// Unauthenticated client, for the login and renewal mutations. Their bodies hold a password
+    /// or a refresh token, and reqwest re-sends a body on a 307 or 308, so this client follows no
+    /// redirect to another host.
     pub fn anonymous(endpoint: &str, verbose: bool) -> Result<Self, CliError> {
-        Self::new(endpoint, None, verbose)
+        let http = pk_cli_http::builder("m1f", env!("CARGO_PKG_VERSION"))
+            .redirect(pk_cli_core::transport::same_host_redirects())
+            .build()
+            .map_err(|e| CliError::Other(format!("failed to build HTTP client: {e}")))?;
+        Ok(Self {
+            http,
+            endpoint: endpoint.to_string(),
+            token: None,
+            verbose,
+        })
     }
 
     /// Send a GraphQL operation and return its `data` object.
@@ -1145,5 +1156,34 @@ pub(crate) mod tests {
         ));
         assert!(looks_like_html("  <html lang=\"en\">"));
         assert!(!looks_like_html(r#"{"data":{}}"#));
+    }
+
+    /// reqwest re-sends a body on a 307, so this is what would carry a password away.
+    #[test]
+    fn an_anonymous_call_answered_with_a_307_to_another_host_sends_the_body_nowhere() {
+        use std::io::{Read, Write};
+        let elsewhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        elsewhere.set_nonblocking(true).unwrap();
+        let there = elsewhere.local_addr().unwrap().port();
+        let portal = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", portal.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut conn, _) = portal.accept().unwrap();
+            let mut chunk = [0u8; 4096];
+            let _ = conn.read(&mut chunk);
+            let _ = write!(
+                conn,
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://localhost:{there}/graphql\r\n\
+                 content-length: 0\r\nconnection: close\r\n\r\n"
+            );
+        });
+        let client = M1Client::anonymous(&endpoint, false).unwrap();
+        let answer = client.execute("query { dummy }", serde_json::json!({}), None);
+        assert!(answer.is_err());
+        assert_eq!(
+            elsewhere.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the other host heard nothing"
+        );
     }
 }

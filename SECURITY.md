@@ -151,7 +151,8 @@ status` says whether a profile is kept, not whether anything is signed in there.
 
 `m1f auth logout` clears the stored tokens and removes the kept browser profile,
 and only that directory, as its last step; `--forget` also clears the config
-identity. There is no way to remove the profile alone. Every step is attempted even
+identity and the `mcp --http` connector token (`mcp-http-token`), though a running
+server keeps the token it started with. There is no way to remove the profile alone. Every step is attempted even
 after one fails, and a config that cannot be parsed stops none of them, so a keychain
 or config failure does not leave the profile behind.
 If one fails, the error says what is cleared and what remains, and how to finish,
