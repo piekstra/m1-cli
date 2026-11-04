@@ -92,6 +92,13 @@ enum Command {
     Ira,
     /// Per-account snapshot: value, cost, unrealized gain %, funding.
     Summary,
+    /// Queued orders, auto-invest, next trade window, cash to withdraw and
+    /// pending transfers (account-trading/v1).
+    ///
+    /// Covers the selected account (--account, M1F_ACCOUNT, or the config
+    /// default, as `holdings list` does), or every account when none is selected.
+    /// A figure M1 did not give is null with --json and `-` otherwise, never 0.
+    Trading,
     /// M1's own system status — no login required.
     Status,
     /// Raw GraphQL passthrough (read-only).
@@ -358,6 +365,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
         Command::NetWorth => commands::networth::show(&ctx),
         Command::Ira => commands::ira::show(&ctx),
         Command::Summary => commands::summary::show(&ctx),
+        Command::Trading => commands::trading::show(&ctx),
         Command::Status => commands::status::show(&ctx),
         Command::Api(ApiCmd::Query(args)) => commands::api::query(&ctx, args),
         Command::SelfUpdate(args) => Updater {
@@ -400,6 +408,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
                     "net-worth",
                     "ira",
                     "summary",
+                    "trading",
                     "status",
                     "api",
                     "mcp",

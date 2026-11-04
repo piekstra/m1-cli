@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 const TOKEN: &str = "5f0c1e2d3b4a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
-const TOOLS: [&str; 4] = [
+const TOOLS: [&str; 5] = [
     "m1_portfolio",
     "m1_activity",
     "m1_documents",
     "m1_realized_gains",
+    "m1_trading",
 ];
 
 /// A keychain service that holds nothing, so no test reads a real session.
@@ -158,7 +159,7 @@ fn the_start_line_names_the_version() {
 }
 
 #[test]
-fn the_worker_gets_the_four_read_only_tools_with_the_token_only() {
+fn the_worker_gets_the_read_only_tools_with_the_token_only() {
     let s = Server::start();
     let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
 

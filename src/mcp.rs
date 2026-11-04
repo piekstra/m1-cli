@@ -1,14 +1,15 @@
-//! `m1f mcp`: M1 net worth, positions, activity, tax documents and realized
-//! gains as MCP tools (cli-common DESIGN.md §1.9, the MCP profile), for
-//! Claude Code, Claude Desktop and any MCP client.
+//! `m1f mcp`: M1 net worth, positions, activity, tax documents, realized gains
+//! and queued trading as MCP tools (cli-common DESIGN.md §1.9, the MCP profile),
+//! for Claude Code, Claude Desktop and any MCP client.
 //!
-//! Four read-only tools over the same GraphQL reads and mappers the commands
+//! Five read-only tools over the same GraphQL reads and mappers the commands
 //! use: `m1_portfolio` (net worth, every account's total, positions),
 //! `m1_activity` (trades, dividends and transfers over a date range),
-//! `m1_documents` (statements and tax forms, listed, never downloaded) and
-//! `m1_realized_gains` (closed lots and their gains by sale date). Nothing
-//! here can write: the client underneath refuses any GraphQL mutation but
-//! the login's own (`graphql::ensure_read_only`).
+//! `m1_documents` (statements and tax forms, listed, never downloaded),
+//! `m1_realized_gains` (closed lots and their gains by sale date) and
+//! `m1_trading` (queued orders, auto-invest, the next trade window, pending
+//! transfers). Nothing here can write: a tool sends only the fixed query
+//! documents its command does, and takes no document from its caller.
 //!
 //! Provider access goes through [`Source`], the per-target seam of
 //! cli-common's MCP profile (DESIGN.md §2.3); the tests run every tool
@@ -33,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands::accounts::{self, AccountRef};
-use crate::commands::{activity, documents, holdings, lots, networth, positions, Ctx};
+use crate::commands::{activity, documents, holdings, lots, networth, positions, trading, Ctx};
 use crate::config::Config;
 use crate::parse;
 
@@ -41,6 +42,7 @@ pub const PORTFOLIO_TOOL: &str = "m1_portfolio";
 pub const ACTIVITY_TOOL: &str = "m1_activity";
 pub const DOCUMENTS_TOOL: &str = "m1_documents";
 pub const GAINS_TOOL: &str = "m1_realized_gains";
+pub const TRADING_TOOL: &str = "m1_trading";
 
 /// How long a call waits for the one before it. Parallel calls from one model turn are normal and
 /// short; past this, the model is better told than left to retry into a queue.
@@ -88,6 +90,8 @@ pub trait Source {
     /// One account's closed lots (`lots::lot_dto`); and whether the page
     /// ceiling stopped the walk.
     async fn closed_lots(&self, account_id: &str) -> Result<(Vec<Value>, bool), CliError>;
+    /// One account's trading node (`trading::account_dto` maps it).
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError>;
 }
 
 /// The live API, through the same [`Ctx`] the commands use.
@@ -194,6 +198,10 @@ impl Source for LiveSource {
 
     async fn closed_lots(&self, account_id: &str) -> Result<(Vec<Value>, bool), CliError> {
         self.with_ctx(|ctx| lots::fetch(ctx, account_id, &["CLOSED"], &RangeArgs::default()))
+    }
+
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError> {
+        self.with_ctx(|ctx| trading::fetch_node(ctx, account_id))
     }
 }
 
@@ -489,7 +497,48 @@ pub struct GainsOut {
     pub page: Page<LotItem>,
 }
 
+// ---- m1_trading -------------------------------------------------------------
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TradingArgs {
+    /// Only this account (name or id).
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// Each account is `m1f trading --json`'s entry with its amounts as decimal
+/// strings. Its fields go undeclared here because declaring them would not fit
+/// the 8,000 characters the definitions share; the description names them, and
+/// `the_trading_tool_returns_the_commands_data` holds them to the command's.
+/// One entry per account, as with `m1_portfolio`'s `accounts`, so it takes no
+/// `limit` or `cursor`: `account` narrows a result that is too large.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TradingOut {
+    pub accounts: Vec<serde_json::Map<String, Value>>,
+}
+
 // ---- the toolset ------------------------------------------------------------
+
+/// What `ListArgs` says of its arguments, shortened. Four tools repeat it, and it
+/// is the only text long enough to make room for a fifth tool inside the 8,000
+/// characters all the definitions share.
+const LIST_ARGS: [(&str, &str); 3] = [
+    ("limit", "1 to 200 (default 25)."),
+    ("cursor", "The previous page's `next_cursor`."),
+    (
+        "response_format",
+        "`detailed` adds ids and provider detail.",
+    ),
+];
+
+fn short_list_args(mut tool: ToolDef) -> ToolDef {
+    for (arg, description) in LIST_ARGS {
+        if let Some(schema) = tool.input_schema["properties"].get_mut(arg) {
+            schema["description"] = Value::from(description);
+        }
+    }
+    tool
+}
 
 impl<S: Source> Toolset for M1Tools<S> {
     fn server(&self) -> Server {
@@ -502,13 +551,13 @@ impl<S: Source> Toolset for M1Tools<S> {
     }
 
     fn tools(&self) -> Vec<ToolDef> {
-        vec![
+        let tools = vec![
             ToolDef::read(
                 PORTFOLIO_TOOL,
-                "M1 net worth and positions",
-                "Shows the user's M1 net worth, each account's total and the positions held. \
-                 Use it for what they own at M1 and its value. Returns net_worth, accounts and \
-                 position items. Narrow with account or symbol.",
+                "M1 portfolio",
+                "Shows the user's M1 net worth, account totals and positions. Use it for what \
+                 they own at M1. Returns net_worth, accounts and position items. Narrow with \
+                 account or symbol.",
             )
             .input::<PortfolioArgs>()
             .output::<PortfolioOut>(),
@@ -525,7 +574,7 @@ impl<S: Source> Toolset for M1Tools<S> {
             ToolDef::read(
                 DOCUMENTS_TOOL,
                 "M1 documents",
-                "Lists the user's M1 statements and tax forms, newest first, without \
+                "Lists M1 statements and tax forms, newest first, without \
                  downloading them. Use it to see which 1099s or statements exist. Items carry \
                  date, name and type. Narrow with type (tax-form) or since/until.",
             )
@@ -541,7 +590,18 @@ impl<S: Source> Toolset for M1Tools<S> {
             )
             .input::<GainsArgs>()
             .output::<GainsOut>(),
-        ]
+            ToolDef::read(
+                TRADING_TOOL,
+                "M1 trading",
+                "Shows what is queued in each M1 account and when it trades. Use it for whether a \
+                 sale is queued and what cash or transfer waits. Returns accounts with status, \
+                 auto_invest, trading, orders, estimated, cash, total_value and \
+                 pending_transfers; null means no figure. Narrow with account.",
+            )
+            .input::<TradingArgs>()
+            .output::<TradingOut>(),
+        ];
+        tools.into_iter().map(short_list_args).collect()
     }
 
     async fn call(&self, name: &str, args: Value) -> Result<ToolOutput, ToolError> {
@@ -550,6 +610,7 @@ impl<S: Source> Toolset for M1Tools<S> {
             ACTIVITY_TOOL => self.activity(parse_args(args)?).await,
             DOCUMENTS_TOOL => self.documents(parse_args(args)?).await,
             GAINS_TOOL => self.gains(parse_args(args)?).await,
+            TRADING_TOOL => self.trading(parse_args(args)?).await,
             other => Err(ToolError::other(format!("no handler for {other}"))),
         }
     }
@@ -779,6 +840,23 @@ impl<S: Source> M1Tools<S> {
             page: page.page(matched, Order::Descending, "since/until, account or symbol")?,
         })
     }
+
+    async fn trading(&self, args: TradingArgs) -> Result<ToolOutput, ToolError> {
+        let account = non_empty(args.account.as_deref());
+
+        let _turn = self.source.turn().map_err(tool_err)?;
+        let nodes = self.source.accounts().await.map_err(tool_err)?;
+        let all = account_refs(&nodes)?;
+        let mut accounts = Vec::new();
+        for acct in pick(&all, account)? {
+            let node = self.source.trading(&acct.id).await.map_err(tool_err)?;
+            let dto = trading::account_dto(&node).map_err(tool_err)?;
+            if let Value::Object(fields) = plain_amounts(dto) {
+                accounts.push(fields);
+            }
+        }
+        ToolOutput::new(&TradingOut { accounts })
+    }
 }
 
 /// Where a row belongs in a newest-first list across accounts: its date, then its account and id.
@@ -926,6 +1004,25 @@ fn amount(v: &Value, key: &str) -> Option<String> {
         .and_then(|m| m.get("amount"))
         .and_then(Value::as_str)
         .map(String::from)
+}
+
+/// Every `Money` in a DTO as its decimal string, as every tool returns amounts.
+fn plain_amounts(v: Value) -> Value {
+    match v {
+        Value::Object(fields) => match fields.get("amount").and_then(Value::as_str) {
+            Some(amount) if fields.len() == 2 && fields.contains_key("currency") => {
+                Value::String(amount.to_string())
+            }
+            _ => Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(k, field)| (k, plain_amounts(field)))
+                    .collect(),
+            ),
+        },
+        Value::Array(rows) => Value::Array(rows.into_iter().map(plain_amounts).collect()),
+        other => other,
+    }
 }
 
 fn matches_text(row: &Value, key: &str, wanted: Option<&str>) -> bool {

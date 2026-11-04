@@ -512,6 +512,198 @@ pub const IRA_CONTRIBUTIONS: &str = r#"query IraContributions($accountId: ID!) {
   }
 }"#;
 
+/// What is queued in one account and when it trades, schema-verified by
+/// introspection on 2026-11-04 and not yet exercised live (docs/api.md,
+/// "Trading status").
+///
+/// `PortfolioSlice.to` is the `Sliceable` interface, which has no `symbol`: a
+/// `Security` has one, and so does `MutualFund`, which is a `Sliceable` but not
+/// a `Security`. A pie has only a name.
+///
+/// A rebalance's lock lives in `rebalanceStatus`, so the fragment selects both
+/// statuses. `netDescendant*` leave out an order on the root slice itself, so
+/// the root's own `order` is selected beside them.
+pub const ACCOUNT_TRADING: &str = r#"query AccountTrading($accountId: ID!, $first: Int) {
+  node(id: $accountId) {
+    ... on Account {
+      id
+      name
+      nickname
+      registration
+      isRetirement
+      status
+      isLiquidating
+      isTradingPaused
+      tradingPause {
+        title
+        description
+      }
+      maxCashThreshold
+      autoInvestTriggerMinimum
+      trading {
+        isInProgress
+        inProgressWindowForAccount
+        nextTradingTime
+        nextWindowForAccount
+        hasAccessToNextAfternoonWindow
+      }
+      portfolioSlicesWithSellOrders {
+        ...TradingSlice
+      }
+      portfolioSlicesWithBuyOrders {
+        ...TradingSlice
+      }
+      portfolioSlicesWithRebalances {
+        ...TradingSlice
+      }
+      rootPortfolioSlice {
+        orderStatus {
+          netDescendantSellOrderAmount
+          netDescendantBuyOrderAmount
+          order {
+            cashFlow
+          }
+        }
+      }
+      imminentPendingCashFlowForOrders
+      estimatedTrading {
+        hasTrades
+        totalSellAmount
+        totalBuyAmount
+        lastEstimatedTime
+        sells(first: $first) {
+          ...TradingEstimates
+        }
+        buys(first: $first) {
+          ...TradingEstimates
+        }
+      }
+      balance {
+        totalValue {
+          value
+          hasValue
+        }
+        cash {
+          available
+          availableForWithdrawal
+        }
+      }
+      hasPendingTransferInstances
+      pendingTransferInstanceSummary
+      pendingTransferInstances {
+        id
+        status {
+          code
+        }
+        title
+        description
+        startDate
+        endDate
+        amount
+        isLiquidation
+        isCheck
+        dependsOnSells
+        timingDescription
+        iraDistributionReason
+        from {
+          transferParticipantType
+          transferParticipantName
+        }
+        to {
+          transferParticipantType
+          transferParticipantName
+        }
+      }
+    }
+  }
+}
+
+fragment TradingSlice on PortfolioSlice {
+  isRootSlice
+  to {
+    name
+    ... on Security {
+      symbol
+    }
+    ... on MutualFund {
+      symbol
+    }
+  }
+  value {
+    total
+  }
+  orderStatus {
+    isLocked
+    lockReason
+    order {
+      cashFlow
+    }
+  }
+  rebalanceStatus {
+    isLocked
+    lockReason
+  }
+}
+
+fragment TradingEstimates on EstimatedTradeAmountConnection {
+  total
+  pageInfo {
+    hasNextPage
+    endCursor
+  }
+  edges {
+    node {
+      amount
+      isBuy
+      of {
+        symbol
+        name
+      }
+      pill {
+        label
+      }
+    }
+  }
+}"#;
+
+/// The later pages of one account's estimated trades, one side at a time. Each
+/// side has its own cursor, and asking again for a finished side would restart it.
+pub const ACCOUNT_ESTIMATED_TRADES: &str = r#"query AccountEstimatedTrades($accountId: ID!, $first: Int, $sellsAfter: String, $buysAfter: String, $withSells: Boolean!, $withBuys: Boolean!) {
+  node(id: $accountId) {
+    ... on Account {
+      estimatedTrading {
+        sells(first: $first, after: $sellsAfter) @include(if: $withSells) {
+          ...TradingEstimates
+        }
+        buys(first: $first, after: $buysAfter) @include(if: $withBuys) {
+          ...TradingEstimates
+        }
+      }
+    }
+  }
+}
+
+fragment TradingEstimates on EstimatedTradeAmountConnection {
+  total
+  pageInfo {
+    hasNextPage
+    endCursor
+  }
+  edges {
+    node {
+      amount
+      isBuy
+      of {
+        symbol
+        name
+      }
+      pill {
+        label
+      }
+    }
+  }
+}"#;
+
 /// Statements, trade confirmations, and tax forms.
 ///
 /// `Document` is an interface (`InvestAccountDocument` / `AccountDocument` /
@@ -802,6 +994,31 @@ pub fn guard_read_only(doc: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every document a read sends is a query, so a read cannot reach a mutation.
+    #[test]
+    fn every_read_document_passes_the_read_only_guard() {
+        for doc in [
+            SYSTEM_STATUS,
+            VIEWER_IS_AUTHENTICATED,
+            NET_WORTH,
+            TRANSFERS,
+            ACCOUNTS,
+            HOLDINGS,
+            ACTIVITY,
+            DIVIDENDS,
+            TRANSACTIONS,
+            ACCOUNT_SUMMARY,
+            IRA_CONTRIBUTIONS,
+            ACCOUNT_TRADING,
+            ACCOUNT_ESTIMATED_TRADES,
+            DOCUMENTS,
+            ACCOUNT_TAX_LOTS,
+        ] {
+            assert!(guard_read_only(doc).is_ok(), "{doc}");
+            assert_eq!(operations(doc), vec![OperationKind::Query], "{doc}");
+        }
+    }
 
     #[test]
     fn plain_query_is_allowed() {

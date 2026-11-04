@@ -41,6 +41,7 @@ fn help_lists_the_standard_surface() {
         .stdout(predicate::str::contains("net-worth"))
         .stdout(predicate::str::contains("ira"))
         .stdout(predicate::str::contains("summary"))
+        .stdout(predicate::str::contains("trading"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("api"))
         .stdout(predicate::str::contains("mcp"))
@@ -82,6 +83,7 @@ fn every_subcommand_help_renders() {
         vec!["net-worth"],
         vec!["ira"],
         vec!["summary"],
+        vec!["trading"],
         vec!["status"],
         vec!["api"],
         vec!["api", "query"],
@@ -96,6 +98,20 @@ fn every_subcommand_help_renders() {
             .success()
             .stdout(predicate::str::is_empty().not());
     }
+}
+
+/// `m1f trading` takes no arguments of its own, and a bad one fails before the
+/// keychain. Its help says which accounts it covers and that a missing figure is not 0.
+#[test]
+fn trading_help_says_its_scope_and_refuses_a_stray_argument() {
+    m1f()
+        .args(["trading", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("account-trading/v1"))
+        .stdout(predicate::str::contains("every account"))
+        .stdout(predicate::str::contains("never 0"));
+    m1f().args(["trading", "--limit", "1"]).assert().code(2);
 }
 
 #[test]
@@ -145,6 +161,7 @@ fn info_emits_cli_info_v1() {
         "net-worth",
         "ira",
         "summary",
+        "trading",
         "status",
         "api",
         "mcp",

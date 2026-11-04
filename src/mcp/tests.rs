@@ -30,6 +30,8 @@ struct Fixtures {
     activity: Vec<Value>,
     documents: Vec<Document>,
     lots: Vec<Value>,
+    /// Trading nodes, one per account on the accounts fixture.
+    trading: Vec<Value>,
     /// Report every walk as stopped by the page ceiling.
     capped: bool,
     /// Every source call, as `method:arg`.
@@ -50,6 +52,11 @@ impl Fixtures {
         let activity = fixture(include_str!("../../tests/fixtures/reads/activity.json"));
         let documents = fixture(include_str!("../../tests/fixtures/reads/documents.json"));
         let lots = fixture(include_str!("../../tests/fixtures/reads/lots.json"));
+        let trading = [
+            include_str!("../../tests/fixtures/reads/trading-idle.json"),
+            include_str!("../../tests/fixtures/reads/trading.json"),
+            include_str!("../../tests/fixtures/reads/trading-unavailable.json"),
+        ];
         Self {
             accounts: parse::nodes(&accounts, &["viewer", "accounts"]).unwrap(),
             balances: parse::at(&net_worth, &["viewer", "overview", "balances"])
@@ -73,6 +80,10 @@ impl Fixtures {
                 .iter()
                 .map(|n| lots::lot_dto(n).unwrap())
                 .filter(|l| l.get("closed").is_some())
+                .collect(),
+            trading: trading
+                .iter()
+                .map(|raw| fixture(raw)["node"].clone())
                 .collect(),
             capped: false,
             calls: Mutex::new(Vec::new()),
@@ -175,6 +186,16 @@ impl Source for Fixtures {
         };
         Ok((rows, self.capped))
     }
+
+    async fn trading(&self, account_id: &str) -> Result<Value, CliError> {
+        self.record(format!("trading:{account_id}"))?;
+        Ok(self
+            .trading
+            .iter()
+            .find(|n| n["id"] == account_id)
+            .expect("a trading fixture for each account")
+            .clone())
+    }
 }
 
 fn tools() -> M1Tools<Fixtures> {
@@ -207,7 +228,13 @@ fn the_tools_conform_to_the_mcp_profile() {
 fn the_definitions_stay_small() {
     let t = tools();
     let mut total = 0;
-    for name in [PORTFOLIO_TOOL, ACTIVITY_TOOL, DOCUMENTS_TOOL, GAINS_TOOL] {
+    for name in [
+        PORTFOLIO_TOOL,
+        ACTIVITY_TOOL,
+        DOCUMENTS_TOOL,
+        GAINS_TOOL,
+        TRADING_TOOL,
+    ] {
         let size = definition_size(&t, name);
         eprintln!("{name}: {size} characters");
         assert!(size < 2_500, "{name} takes {size} characters");
@@ -376,6 +403,7 @@ fn every_tool_takes_one_turn() {
             GAINS_TOOL,
             json!({"since": "2026-01-01", "until": "2026-12-31"}),
         ),
+        (TRADING_TOOL, json!({})),
     ] {
         let t = tools();
         let r = call(&t, tool, args);
@@ -872,6 +900,113 @@ fn a_lot_amount_that_is_not_a_decimal_fails_the_totals() {
     assert!(text.contains("12,50"), "{text}");
 }
 
+// ---- m1_trading -------------------------------------------------------------
+
+/// The tool's accounts are the command's, with amounts as strings: the output
+/// schema leaves their fields undeclared, so this is what holds them.
+#[test]
+fn the_trading_tool_returns_the_commands_data() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let got = out["accounts"].as_array().unwrap();
+    assert_eq!(got.len(), 3);
+    for (row, node) in got.iter().zip(&t.source().trading) {
+        let want = plain_amounts(trading::account_dto(node).unwrap());
+        assert_eq!(row, &want);
+    }
+    assert_eq!(
+        t.source().calls(),
+        [
+            "accounts",
+            "trading:acct-000000001",
+            "trading:acct-000000002",
+            "trading:acct-000000003"
+        ]
+    );
+}
+
+#[test]
+fn a_queued_sale_reads_in_decimal_strings() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({"account": "roth ira"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let got = out["accounts"].as_array().unwrap();
+    assert_eq!(got.len(), 1);
+    let roth = &got[0];
+    assert_eq!(roth["name"], "Roth IRA");
+    assert_eq!(roth["auto_invest"]["on"], true);
+    assert_eq!(roth["auto_invest"]["threshold"], "100.00");
+    assert_eq!(roth["orders"]["sells"][0]["amount"], "-750.50");
+    assert_eq!(roth["trading"]["next_window"], "MORNING");
+    assert_eq!(roth["cash"]["available_for_withdrawal"], "0.00");
+    assert_eq!(roth["pending_transfers"]["items"][0]["is_check"], true);
+    assert_eq!(t.source().calls(), ["accounts", "trading:acct-000000002"]);
+}
+
+#[test]
+fn a_trading_figure_m1_did_not_give_stays_null() {
+    let t = tools();
+    let r = call(&t, TRADING_TOOL, json!({"account": "Joint Brokerage"}));
+    let out = assert_fits(&t, TRADING_TOOL, &r);
+    let joint = &out["accounts"][0];
+    assert!(joint["estimated"].is_null());
+    assert!(joint["orders"]["sells"].is_null());
+    assert!(joint["cash"]["available"].is_null());
+    assert!(joint["total_value"].is_null());
+    assert_eq!(joint["auto_invest"]["on"], false);
+}
+
+#[test]
+fn trading_for_an_unknown_account_lists_the_names_that_exist() {
+    let t = tools();
+    let text = err(&call(&t, TRADING_TOOL, json!({"account": "Rainy Day"}))).to_string();
+    assert!(text.starts_with("not_found:"), "{text}");
+    assert!(text.contains("Roth IRA"), "{text}");
+}
+
+/// An account whose shape changed fails the call: a renamed field must not reach
+/// the model as a setting the account does not have.
+#[test]
+fn a_trading_shape_change_is_upstream() {
+    let mut fixtures = Fixtures::new();
+    fixtures.trading[1]
+        .as_object_mut()
+        .unwrap()
+        .remove("maxCashThreshold");
+    let t = M1Tools::new(fixtures);
+    let text = err(&call(&t, TRADING_TOOL, json!({}))).to_string();
+    assert!(text.starts_with("upstream:"), "{text}");
+    assert!(text.contains("maxCashThreshold"), "{text}");
+}
+
+#[test]
+fn the_shortened_list_arguments_keep_their_limits_and_choices() {
+    for tool in tools().tools() {
+        let props = &tool.input_schema["properties"];
+        if tool.name == TRADING_TOOL {
+            assert!(props.get("limit").is_none());
+            continue;
+        }
+        assert_eq!(props["limit"]["maximum"], 200, "{}", tool.name);
+        assert_eq!(
+            props["limit"]["description"], "1 to 200 (default 25).",
+            "{}",
+            tool.name
+        );
+        assert!(props["cursor"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("next_cursor"));
+        assert_eq!(
+            props["response_format"]["enum"],
+            json!(["concise", "detailed"]),
+            "{}",
+            tool.name
+        );
+    }
+}
+
 // ---- errors -----------------------------------------------------------------
 
 #[test]
@@ -880,7 +1015,13 @@ fn a_missing_session_asks_for_the_browser_login_in_a_terminal() {
     *t.source().fail.lock().unwrap() = Some(CliError::Auth(
         "not logged in — run `m1f auth login --browser`".into(),
     ));
-    for name in [PORTFOLIO_TOOL, ACTIVITY_TOOL, DOCUMENTS_TOOL, GAINS_TOOL] {
+    for name in [
+        PORTFOLIO_TOOL,
+        ACTIVITY_TOOL,
+        DOCUMENTS_TOOL,
+        GAINS_TOOL,
+        TRADING_TOOL,
+    ] {
         let text = err(&call(&t, name, json!({}))).to_string();
         assert!(text.starts_with("auth:"), "{name}: {text}");
         assert!(

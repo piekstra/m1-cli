@@ -165,9 +165,9 @@ If a real write is ever added it needs §1.3's confirmation rules (prompt unless
 
 ## MCP tools
 
-`m1f mcp` (src/mcp.rs) serves four read-only tools under cli-common's MCP
+`m1f mcp` (src/mcp.rs) serves five read-only tools under cli-common's MCP
 profile (DESIGN.md §1.9): `m1_portfolio`, `m1_activity`, `m1_documents`
-(listed, never downloaded) and `m1_realized_gains`. They read through the
+(listed, never downloaded), `m1_realized_gains` and `m1_trading`. They read through the
 `Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the commands
 use, one call at a time. A refresh rotates the stored refresh token, and two
 refreshing at once would present the same one twice, so `Ctx::refresh` runs
@@ -187,9 +187,13 @@ edge.
   `tests/mcp_stdio.rs` drives the binary over stdio and `tests/mcp_http.rs`
   over HTTP, without reading the keychain; `tests/packaging.rs` holds
   `packaging/mcpb/manifest.json` to the binary.
-- Budget: the four definitions stay under 8,000 characters together
+- Budget: the five definitions stay under 8,000 characters together
   (`the_definitions_stay_small` prints each size). Shorten a description
-  before adding a field.
+  before adding a field. To fit the fifth, `short_list_args` shortens what
+  `ListArgs` says of its arguments, and `TradingOut` leaves each account's
+  fields undeclared: its description names them, and
+  `the_trading_tool_returns_the_commands_data` holds them to
+  `trading::account_dto`.
 - Releases attach `m1f-<version>.mcpb`, a Claude Desktop extension with no
   settings: it reads the keychain session.
 - `m1f mcp --http --port <PORT>` (pk-cli-mcp's `http` feature) serves the
@@ -211,6 +215,9 @@ edge.
   suffix doubles.
 - Money is `{"amount": "123.45", "currency": "USD"}`, string decimal, never a
   float. Dates are ISO `YYYY-MM-DD`.
+- A field M1 did not give is omitted, except in `account-trading/v1`: there
+  every key stays and is `null`, because `[]` means nothing is queued and a
+  missing figure must not read as zero (docs/api.md, "Trading status").
 - Field/column order is insertion order. Lead with identifying fields.
 
 ## Household (cross-account) reads
@@ -225,6 +232,8 @@ reuses the seam instead of re-implementing account selection:
    capture. `holdings list` is the documented exception: it keeps
    `Ctx::selected_account()` (flag, env, then config) for backward
    compatibility and only spans the household when nothing is selected.
+   `trading` follows `holdings list`: it answers "what is queued here", so a
+   config default narrows it, and its help says so.
 2. **Fan out with `accounts::scope` + `accounts::rows_across`.** Every row is
    stamped by `AccountRef::stamp` with `account_id`, `account_name`,
    `registration` and `is_retirement`.

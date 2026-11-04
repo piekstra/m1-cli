@@ -1,6 +1,6 @@
 [package]
 name = "m1-cli"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 # pk-cli-auth (cli-common v0.20.0) needs 1.89.
 rust-version = "1.89"

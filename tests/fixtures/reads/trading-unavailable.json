@@ -1,0 +1,31 @@
+{
+  "data": {
+    "node": {
+      "id": "acct-000000003",
+      "name": "Joint Brokerage",
+      "nickname": "Joint Brokerage",
+      "registration": "JOINT",
+      "isRetirement": false,
+      "status": "OPENED",
+      "isLiquidating": false,
+      "isTradingPaused": null,
+      "tradingPause": null,
+      "maxCashThreshold": null,
+      "autoInvestTriggerMinimum": 25,
+      "trading": null,
+      "portfolioSlicesWithSellOrders": null,
+      "portfolioSlicesWithBuyOrders": null,
+      "portfolioSlicesWithRebalances": null,
+      "rootPortfolioSlice": null,
+      "imminentPendingCashFlowForOrders": null,
+      "estimatedTrading": null,
+      "balance": {
+        "totalValue": null,
+        "cash": null
+      },
+      "hasPendingTransferInstances": null,
+      "pendingTransferInstanceSummary": null,
+      "pendingTransferInstances": null
+    }
+  }
+}

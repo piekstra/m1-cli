@@ -81,13 +81,13 @@ no flag for another address, and refuses to start without a bearer token of
 256 random bits and replaces only with `--overwrite`. Every request must
 carry the token (compared in constant time) and a `Host` of `127.0.0.1` or
 `localhost`, and must not carry an `Origin`; there are no CORS headers. Only
-the read-only tools are served (all four are). The session stays in the
+the read-only tools are served (all five are). The session stays in the
 keychain: the Worker sends tool calls and receives results, and never sees
 a cookie or a token for M1.
 
 **Tool results leave your computer on this path.** They hold your financial
-data (balances, positions, activity, realized gains, the list of your tax
-documents). They cross Cloudflare, through your tunnel and your Worker, and
+data (balances, positions, activity, realized gains, queued orders, pending
+transfers, the list of your tax documents). They cross Cloudflare, through your tunnel and your Worker, and
 reach Claude, which shows them in your conversation. Who holds what, and what
 a leaked token can do, is in the connector's
 [threat model](https://github.com/piekstra/cli-common/blob/main/connector/README.md#threat-model).
